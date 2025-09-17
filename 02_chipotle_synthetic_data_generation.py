@@ -1,18 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Chipotle Analytics - Synthetic Data Generation
-# MAGIC 
+# MAGIC
 # MAGIC **Purpose**: Generate realistic synthetic data representing 300 stores (~10% of Chipotle US operations)
-# MAGIC 
+# MAGIC
 # MAGIC **Outputs**: Populated gold layer tables with 3 years of transaction history
 # MAGIC - ~50M transactions
 # MAGIC - ~5M unique customers  
 # MAGIC - 300 store locations across US
-# MAGIC 
+# MAGIC
 # MAGIC **Assumptions**: 
 # MAGIC - Tables created from 01_config notebook
 # MAGIC - Unity Catalog permissions in place
-# MAGIC 
+# MAGIC
 # MAGIC **Parameters**:
 # MAGIC - start_date: Beginning of data generation (default: 2022-01-01)
 # MAGIC - end_date: End of data generation (default: 2024-12-31)
@@ -122,36 +122,36 @@ for state, store_count in state_distribution.items():
                                     weights=[0.35, 0.40, 0.15, 0.10])[0]
         
         if trade_area == 'urban':
-            seating = random.randint(15, 35)
-            parking = random.randint(0, 10)
-            pop_3mi = random.randint(150000, 500000)
-            income_3mi = random.randint(55000, 95000)
+            seating = int(random.randint(15, 35))
+            parking = int(random.randint(0, 10))
+            pop_3mi = int(random.randint(150000, 500000))
+            income_3mi = int(random.randint(55000, 95000))
         elif trade_area == 'suburban':
-            seating = random.randint(40, 70)
-            parking = random.randint(20, 50)
-            pop_3mi = random.randint(50000, 150000)
-            income_3mi = random.randint(65000, 120000)
+            seating = int(random.randint(40, 70))
+            parking = int(random.randint(20, 50))
+            pop_3mi = int(random.randint(50000, 150000))
+            income_3mi = int(random.randint(65000, 120000))
         elif trade_area == 'university':
-            seating = random.randint(30, 50)
-            parking = random.randint(5, 20)
-            pop_3mi = random.randint(30000, 100000)
-            income_3mi = random.randint(35000, 65000)
+            seating = int(random.randint(30, 50))
+            parking = int(random.randint(5, 20))
+            pop_3mi = int(random.randint(30000, 100000))
+            income_3mi = int(random.randint(35000, 65000))
         else:  # mall
-            seating = random.randint(25, 45)
-            parking = 0
-            pop_3mi = random.randint(80000, 200000)
-            income_3mi = random.randint(55000, 85000)
+            seating = int(random.randint(25, 45))
+            parking = int(0)
+            pop_3mi = int(random.randint(80000, 200000))
+            income_3mi = int(random.randint(55000, 85000))
         
         store_format = random.choices(['standard', 'drive_thru', 'urban_compact'],
                                      weights=[0.70, 0.20, 0.10])[0]
         
         stores_data.append({
             'store_id': store_id,
-            'store_number': store_counter,
+            'store_number': int(store_counter),
             'address': fake.street_address(),
             'city': random.choice(cities),
             'state': state,
-            'zip_code': fake.zipcode(),  # Simplified to avoid method check
+            'zip_code': fake.zipcode(),
             'latitude': float(fake.latitude()),
             'longitude': float(fake.longitude()),
             'trade_area_type': trade_area,
@@ -159,18 +159,18 @@ for state, store_count in state_distribution.items():
             'parking_spaces': parking,
             'population_3mi': pop_3mi,
             'median_income_3mi': income_3mi,
-            'college_students_pct': 0.35 if trade_area == 'university' else random.uniform(0.05, 0.20),
-            'working_professionals_pct': random.uniform(0.25, 0.45),
-            'families_pct': random.uniform(0.20, 0.40),
+            'college_students_pct': float(0.35) if trade_area == 'university' else float(random.uniform(0.05, 0.20)),
+            'working_professionals_pct': float(random.uniform(0.25, 0.45)),
+            'families_pct': float(random.uniform(0.20, 0.40)),
             'open_date': fake.date_between(start_date='-10y', end_date='-1y'),
             'store_format': store_format,
             'seating_capacity': seating,
-            'kitchen_capacity_score': random.randint(5, 10),
-            'staff_count_avg': random.randint(12, 25),
-            'manager_tenure_months': random.randint(3, 60),
-            'fast_casual_competitors_1mi': random.randint(2, 8),
-            'direct_competitors_3mi': random.randint(0, 3),
-            'restaurant_density_1mi': random.randint(5, 25),
+            'kitchen_capacity_score': int(random.randint(5, 10)),
+            'staff_count_avg': int(random.randint(12, 25)),
+            'manager_tenure_months': int(random.randint(3, 60)),
+            'fast_casual_competitors_1mi': int(random.randint(2, 8)),
+            'direct_competitors_3mi': int(random.randint(0, 3)),
+            'restaurant_density_1mi': int(random.randint(5, 25)),
             'active_flag': True
         })
         
@@ -183,7 +183,9 @@ print(f"✓ Created {stores_df.count()} stores")
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 2: Generate Customer Profiles
+# MAGIC %md
+# MAGIC ##Step 2: Generate Customer Profiles
+# MAGIC
 
 # COMMAND ----------
 
@@ -244,29 +246,55 @@ for segment, config in segments_config.items():
             'registration_channel': np.random.choice(['app', 'web', 'in_store'], p=[0.45, 0.30, 0.25]),
             'age_range': age_range,
             'income_bracket': income,
-            'household_size': random.randint(1, 4),
+            'household_size': int(random.randint(1, 4)),
             'zip_code': random.choice(stores_data)['zip_code'],  # Near a store
             'lifestyle': lifestyle,
             'loyalty_tier': loyalty,
-            'points_balance': random.randint(0, 5000),
-            'lifetime_spend': config['aov'] * config['visits'] * random.uniform(0.8, 2.5),
+            'points_balance': int(random.randint(0, 5000)),
+            'lifetime_spend': float(config['aov'] * config['visits'] * random.uniform(0.8, 2.5)),
             'visit_frequency': {52: 'weekly', 26: 'biweekly', 12: 'monthly', 6: 'occasional'}[config['visits']],
-            'avg_order_value': config['aov'] * random.uniform(0.9, 1.1),
+            'avg_order_value': float(config['aov'] * random.uniform(0.9, 1.1)),
             'preferred_proteins': random.sample(['chicken', 'steak', 'carnitas', 'barbacoa', 'sofritas'], k=random.randint(1, 3)),
             'dietary_preferences': random.sample(['none', 'vegetarian', 'keto', 'high_protein', 'low_sodium'], k=random.randint(0, 2)),
             'app_user': random.random() < config['digital'],
             'email_subscriber': random.random() < 0.6,
             'push_notifications': random.random() < config['digital'] * 0.7,
             'social_media_follower': random.random() < 0.3,
-            'referrals_made': np.random.poisson(1),
-            'churn_risk_score': 0.1 if segment == 'power_user' else (0.7 if segment == 'price_sensitive' else random.uniform(0.2, 0.5)),
+            'referrals_made': int(np.random.poisson(1)),
+            'churn_risk_score': float(0.1) if segment == 'power_user' else (float(0.7) if segment == 'price_sensitive' else float(random.uniform(0.2, 0.5))),
             'customer_segment': segment
         })
         
         customer_counter += 1
 
 # Create DataFrame and save
-customers_df = spark.createDataFrame(customers_data)
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, BooleanType, DateType, ArrayType
+schema = StructType([
+    StructField('customer_id', StringType(), True),
+    StructField('registration_date', DateType(), True),
+    StructField('registration_channel', StringType(), True),
+    StructField('age_range', StringType(), True),
+    StructField('income_bracket', StringType(), True),
+    StructField('household_size', IntegerType(), True),
+    StructField('zip_code', StringType(), True),
+    StructField('lifestyle', StringType(), True),
+    StructField('loyalty_tier', StringType(), True),
+    StructField('points_balance', IntegerType(), True),
+    StructField('lifetime_spend', DoubleType(), True),
+    StructField('visit_frequency', StringType(), True),
+    StructField('avg_order_value', DoubleType(), True),
+    StructField('preferred_proteins', ArrayType(StringType()), True),
+    StructField('dietary_preferences', ArrayType(StringType()), True),
+    StructField('app_user', BooleanType(), True),
+    StructField('email_subscriber', BooleanType(), True),
+    StructField('push_notifications', BooleanType(), True),
+    StructField('social_media_follower', BooleanType(), True),
+    StructField('referrals_made', IntegerType(), True),
+    StructField('churn_risk_score', DoubleType(), True),
+    StructField('customer_segment', StringType(), True)
+])
+
+customers_df = spark.createDataFrame(customers_data, schema=schema)
 customers_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.gold.customer_profiles")
 print(f"✓ Created {customers_df.count()} customers")
 
@@ -312,32 +340,32 @@ menu_items = [
 
 # Add nutritional info and other attributes
 for item in menu_items:
-    item['margin_pct'] = (item['base_price'] - item['cost']) / item['base_price'] if item['base_price'] > 0 else 0
-    item['cost_of_goods'] = item.pop('cost')
+    item['margin_pct'] = float(item['base_price'] - item['cost']) / float(item['base_price']) if item['base_price'] > 0 else 0.0
+    item['cost_of_goods'] = float(item.pop('cost'))
     
     # Realistic nutritional values
     if item['category'] == 'entree':
-        item['calories'] = random.randint(500, 1200)
-        item['protein_g'] = random.uniform(20, 45)
-        item['carbs_g'] = random.uniform(40, 80)
-        item['fat_g'] = random.uniform(15, 35)
+        item['calories'] = int(random.randint(500, 1200))
+        item['protein_g'] = float(random.uniform(20, 45))
+        item['carbs_g'] = float(random.uniform(40, 80))
+        item['fat_g'] = float(random.uniform(15, 35))
     elif item['category'] == 'protein':
-        item['calories'] = random.randint(150, 250)
-        item['protein_g'] = random.uniform(20, 35)
-        item['carbs_g'] = random.uniform(0, 5)
-        item['fat_g'] = random.uniform(5, 15)
+        item['calories'] = int(random.randint(150, 250))
+        item['protein_g'] = float(random.uniform(20, 35))
+        item['carbs_g'] = float(random.uniform(0, 5))
+        item['fat_g'] = float(random.uniform(5, 15))
     elif item['category'] == 'side':
-        item['calories'] = random.randint(200, 600)
-        item['protein_g'] = random.uniform(2, 8)
-        item['carbs_g'] = random.uniform(20, 60)
-        item['fat_g'] = random.uniform(10, 40)
+        item['calories'] = int(random.randint(200, 600))
+        item['protein_g'] = float(random.uniform(2, 8))
+        item['carbs_g'] = float(random.uniform(20, 60))
+        item['fat_g'] = float(random.uniform(10, 40))
     else:  # beverage
-        item['calories'] = random.randint(0, 250)
-        item['protein_g'] = 0
-        item['carbs_g'] = random.uniform(0, 60)
-        item['fat_g'] = 0
+        item['calories'] = int(random.randint(0, 250))
+        item['protein_g'] = float(0.0)
+        item['carbs_g'] = float(random.uniform(0, 60))
+        item['fat_g'] = float(0.0)
     
-    item['sodium_mg'] = random.randint(100, 1500)
+    item['sodium_mg'] = int(random.randint(100, 1500))
     item['allergens'] = []
     item['dietary_flags'] = []
     
@@ -350,8 +378,29 @@ for item in menu_items:
     item['active_flag'] = True
     item['last_updated'] = datetime.now()
 
-# Create DataFrame and save
-menu_df = spark.createDataFrame(menu_items)
+# Define explicit schema to avoid inference errors for empty lists
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType, TimestampType, ArrayType
+menu_schema = StructType([
+    StructField("item_id", StringType(), False),
+    StructField("item_name", StringType(), False),
+    StructField("category", StringType(), False),
+    StructField("subcategory", StringType(), True),
+    StructField("base_price", DoubleType(), False),
+    StructField("cost_of_goods", DoubleType(), True),
+    StructField("margin_pct", DoubleType(), True),
+    StructField("calories", IntegerType(), True),
+    StructField("protein_g", DoubleType(), True),
+    StructField("carbs_g", DoubleType(), True),
+    StructField("fat_g", DoubleType(), True),
+    StructField("sodium_mg", IntegerType(), True),
+    StructField("allergens", ArrayType(StringType()), True),
+    StructField("dietary_flags", ArrayType(StringType()), True),
+    StructField("active_flag", BooleanType(), True),
+    StructField("last_updated", TimestampType(), True),
+])
+
+# Create DataFrame with the explicit schema
+menu_df = spark.createDataFrame(menu_items, schema=menu_schema)
 menu_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.gold.menu_items")
 print(f"✓ Created {menu_df.count()} menu items")
 
@@ -390,6 +439,12 @@ daypart_distribution = {
 chunk_size = 7  # Process a week at a time
 current_date = START_DATE
 transactions_to_insert = []
+
+# Explicitly load customer and menu data for use in this step
+customers_data = spark.read.table(f"{CATALOG}.gold.customer_profiles").collect()
+menu_items = spark.read.table(f"{CATALOG}.gold.menu_items").collect()
+stores_data = spark.read.table(f"{CATALOG}.gold.store_locations").collect()
+
 
 while current_date <= END_DATE:
     chunk_end = min(current_date + timedelta(days=chunk_size), END_DATE)
@@ -468,28 +523,28 @@ while current_date <= END_DATE:
                     
                     # Calculate totals
                     subtotal = sum(item['base_price'] * item['quantity'] for item in order_items)
-                    tax = subtotal * 0.0875  # 8.75% tax
+                    tax = float(subtotal * 0.0875)  # 8.75% tax
                     
                     # Determine channel based on customer digital adoption
                     if customer['app_user'] and random.random() < 0.6:
                         channel = random.choice(['app', 'web'])
-                        order_type = random.choice(['pickup', 'delivery'], p=[0.7, 0.3])
+                        order_type = random.choices(['pickup', 'delivery'], weights=[0.7, 0.3])[0]
                     else:
                         channel = 'in_store'
                         order_type = 'dine_in'
                     
                     # Tips for delivery/pickup
-                    tip = 0
+                    tip = float(0)
                     if order_type == 'delivery':
-                        tip = subtotal * random.uniform(0.10, 0.20)
+                        tip = float(subtotal * random.uniform(0.10, 0.20))
                     elif order_type == 'pickup' and random.random() < 0.15:
-                        tip = subtotal * random.uniform(0.05, 0.15)
+                        tip = float(subtotal * random.uniform(0.05, 0.15))
                     
                     # Apply promotions (10% chance)
-                    discount = 0
+                    discount = float(0)
                     promo_codes = []
                     if random.random() < 0.10:
-                        discount = subtotal * random.uniform(0.10, 0.25)
+                        discount = float(subtotal * random.uniform(0.10, 0.25))
                         promo_codes = [random.choice(['BOGO50', 'SAVE20', 'FREECHIPS', 'STUDENT15'])]
                     
                     # Create transaction
@@ -507,24 +562,57 @@ while current_date <= END_DATE:
                         'channel': channel,
                         'order_type': order_type,
                         'total_amount': float(subtotal + tax + tip - discount),
-                        'tax_amount': float(tax),
-                        'tip_amount': float(tip),
-                        'discount_amount': float(discount),
+                        'tax_amount': tax,
+                        'tip_amount': tip,
+                        'discount_amount': discount,
                         'payment_method': random.choice(['credit_card', 'debit_card', 'apple_pay', 'google_pay', 'cash']),
                         'promotion_codes': promo_codes,
                         'delivery_partner': random.choice(['uber_eats', 'doordash', 'grubhub', None]) if order_type == 'delivery' else None,
-                        'order_prep_time_minutes': random.randint(5, 15),
-                        'customer_wait_time_minutes': random.randint(2, 20),
+                        'order_prep_time_minutes': int(random.randint(5, 15)),
+                        'customer_wait_time_minutes': int(random.randint(2, 20)),
                         'order_items': order_items
                     })
             
             current_date += timedelta(days=1)
         
-        current_date = chunk_end + timedelta(days=1)
     
-    # Insert chunk
+    # Define explicit schema to avoid inference errors
+    from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, TimestampType, DateType, ArrayType
+    
+    items_schema = ArrayType(
+        StructType([
+            StructField("item_id", StringType(), True),
+            StructField("item_name", StringType(), True),
+            StructField("category", StringType(), True),
+            StructField("base_price", DoubleType(), True),
+            StructField("modifications", ArrayType(StringType()), True),
+            StructField("quantity", IntegerType(), True)
+        ])
+    )
+    
+    transactions_schema = StructType([
+        StructField("order_id", StringType(), True),
+        StructField("store_id", StringType(), True),
+        StructField("customer_id", StringType(), True),
+        StructField("order_timestamp", TimestampType(), True),
+        StructField("order_date", DateType(), True),
+        StructField("channel", StringType(), True),
+        StructField("order_type", StringType(), True),
+        StructField("total_amount", DoubleType(), True),
+        StructField("tax_amount", DoubleType(), True),
+        StructField("tip_amount", DoubleType(), True),
+        StructField("discount_amount", DoubleType(), True),
+        StructField("payment_method", StringType(), True),
+        StructField("promotion_codes", ArrayType(StringType()), True),
+        StructField("delivery_partner", StringType(), True),
+        StructField("order_prep_time_minutes", IntegerType(), True),
+        StructField("customer_wait_time_minutes", IntegerType(), True),
+        StructField("order_items", items_schema, True)
+    ])
+    
+    # Insert chunk with explicit schema
     if transactions_to_insert:
-        trans_df = spark.createDataFrame(transactions_to_insert)
+        trans_df = spark.createDataFrame(transactions_to_insert, schema=transactions_schema)
         trans_df.write.mode("append").saveAsTable(f"{CATALOG}.gold.transactions")
         print(f"✓ Inserted {len(transactions_to_insert)} transactions up to {chunk_end.date()}")
         transactions_to_insert = []
@@ -539,77 +627,108 @@ print(f"✓ Transaction generation complete")
 
 # COMMAND ----------
 
-# Generate daily performance metrics
-perf_data = []
+# Import necessary functions and types
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, DateType, ArrayType
+from datetime import timedelta, date
+import random
+import numpy as np
 
-for store in stores_data[:int(len(stores_data) * SAMPLE_PCT)]:
-    current = START_DATE
-    
-    while current <= END_DATE:
-        # Get transaction aggregates for this store/date
-        day_transactions = spark.sql(f"""
-            SELECT 
-                COUNT(*) as transaction_count,
-                SUM(total_amount) as total_revenue,
-                AVG(total_amount) as average_ticket,
-                SUM(CASE WHEN channel IN ('app', 'web') THEN total_amount ELSE 0 END) as digital_revenue,
-                SUM(CASE WHEN channel = 'in_store' THEN total_amount ELSE 0 END) as in_store_revenue,
-                SUM(CASE WHEN order_type = 'delivery' THEN total_amount ELSE 0 END) as delivery_revenue,
-                COUNT(DISTINCT customer_id) as unique_customers
-            FROM {CATALOG}.gold.transactions
-            WHERE store_id = '{store['store_id']}' 
-            AND order_date = '{current.date()}'
-        """).collect()
-        
-        if day_transactions and day_transactions[0]['transaction_count']:
-            row = day_transactions[0]
-            
-            # Calculate operational metrics
-            revenue = float(row['total_revenue'] or 0)
-            trans_count = int(row['transaction_count'] or 0)
-            
-            # Weather simulation
-            weather_conditions = ['sunny', 'cloudy', 'rainy', 'snowy']
-            weather_weights = [0.50, 0.30, 0.15, 0.05] if current.month in [6,7,8] else [0.30, 0.40, 0.25, 0.05]
-            weather = np.random.choice(weather_conditions, p=weather_weights)
-            
-            temp_base = {1: 35, 2: 40, 3: 50, 4: 60, 5: 70, 6: 80,
-                        7: 85, 8: 83, 9: 75, 10: 60, 11: 45, 12: 35}
-            
-            perf_data.append({
-                'store_id': store['store_id'],
-                'business_date': current.date(),
-                'total_revenue': revenue,
-                'transaction_count': trans_count,
-                'average_ticket': float(row['average_ticket'] or 0),
-                'revenue_per_seat': revenue / store['seating_capacity'] if store['seating_capacity'] > 0 else 0,
-                'in_store_revenue': float(row['in_store_revenue'] or 0),
-                'digital_revenue': float(row['digital_revenue'] or 0),
-                'catering_revenue': 0.0,  # Simplified
-                'delivery_revenue': float(row['delivery_revenue'] or 0),
-                'avg_service_time': random.uniform(3.5, 8.0),
-                'peak_hour_throughput': random.randint(40, 80),
-                'staff_hours_scheduled': random.uniform(80, 120),
-                'staff_hours_actual': random.uniform(75, 125),
-                'food_cost_pct': random.uniform(0.28, 0.35),
-                'waste_amount': random.uniform(50, 200),
-                'new_customers': random.randint(5, 25),
-                'returning_customers': row['unique_customers'] - random.randint(5, min(25, row['unique_customers'])),
-                'loyalty_redemptions': random.randint(10, 50),
-                'avg_satisfaction_score': random.uniform(3.8, 4.8),
-                'weather_condition': weather,
-                'temperature_high': temp_base.get(current.month, 60) + random.randint(-10, 10),
-                'precipitation_inches': random.uniform(0, 2.0) if weather == 'rainy' else 0.0,
-                'local_events': [] if random.random() > 0.1 else [random.choice(['sports_game', 'concert', 'festival'])]
-            })
-        
-        current += timedelta(days=1)
+# Create a list of all dates and stores
+start_date_obj = date.fromisoformat(START_DATE.strftime('%Y-%m-%d'))
+end_date_obj = date.fromisoformat(END_DATE.strftime('%Y-%m-%d'))
+all_dates = [start_date_obj + timedelta(days=x) for x in range((end_date_obj - start_date_obj).days + 1)]
 
-# Insert daily performance
-if perf_data:
-    perf_df = spark.createDataFrame(perf_data)
-    perf_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.gold.daily_store_performance")
-    print(f"✓ Generated {len(perf_data)} daily performance records")
+date_store_pairs = []
+for d in all_dates:
+    for store in stores_data:
+        date_store_pairs.append((d, store['store_id']))
+
+# Create a DataFrame from the pairs to join with transactions
+date_store_df = spark.createDataFrame(date_store_pairs, ["business_date", "store_id"])
+
+# Aggregate transactions data in a single, efficient query
+daily_metrics_df = spark.sql(f"""
+    SELECT
+        store_id,
+        order_date AS business_date,
+        COUNT(order_id) AS transaction_count,
+        SUM(total_amount) AS total_revenue,
+        AVG(total_amount) AS average_ticket,
+        SUM(CASE WHEN channel IN ('app', 'web') THEN total_amount ELSE 0.0 END) AS digital_revenue,
+        SUM(CASE WHEN channel = 'in_store' THEN total_amount ELSE 0.0 END) AS in_store_revenue,
+        SUM(CASE WHEN order_type = 'delivery' THEN total_amount ELSE 0.0 END) AS delivery_revenue,
+        COUNT(DISTINCT customer_id) AS unique_customers
+    FROM {CATALOG}.gold.transactions
+    GROUP BY store_id, order_date
+""")
+
+# Join with stores data and fill in missing dates/stores with zeros
+daily_perf_df = date_store_df.join(
+    daily_metrics_df,
+    ["business_date", "store_id"],
+    "left"
+).fillna(0)
+
+# Load store attributes to add to the daily performance DataFrame
+store_attrs_df = stores_df.select(
+    "store_id", "seating_capacity", "store_format", "kitchen_capacity_score"
+)
+
+# Join the aggregated data with store attributes
+daily_perf_df = daily_perf_df.join(store_attrs_df, "store_id", "left")
+
+# Add simulated metrics as UDFs or Spark functions for efficiency
+@F.udf(returnType=DoubleType())
+def calculate_revenue_per_seat(revenue, seating_capacity):
+    return float(revenue) / float(seating_capacity) if seating_capacity > 0 else 0.0
+
+daily_perf_df = daily_perf_df.withColumn("revenue_per_seat", calculate_revenue_per_seat(F.col("total_revenue"), F.col("seating_capacity")))
+daily_perf_df = daily_perf_df.withColumn("avg_service_time", F.rand() * 4.5 + 3.5)
+daily_perf_df = daily_perf_df.withColumn("staff_hours_scheduled", F.rand() * 40 + 80)
+daily_perf_df = daily_perf_df.withColumn("staff_hours_actual", F.rand() * 50 + 75)
+daily_perf_df = daily_perf_df.withColumn("food_cost_pct", F.rand() * 0.07 + 0.28)
+daily_perf_df = daily_perf_df.withColumn("waste_amount", F.rand() * 150 + 50)
+daily_perf_df = daily_perf_df.withColumn("new_customers", F.when(F.col("unique_customers") > 0, F.rand() * 20 + 5).otherwise(0).cast(IntegerType()))
+daily_perf_df = daily_perf_df.withColumn("returning_customers", F.when(F.col("unique_customers") > 0, F.col("unique_customers") - F.col("new_customers")).otherwise(0).cast(IntegerType()))
+daily_perf_df = daily_perf_df.withColumn("loyalty_redemptions", F.when(F.col("unique_customers") > 0, F.rand() * 40 + 10).otherwise(0).cast(IntegerType()))
+daily_perf_df = daily_perf_df.withColumn("avg_satisfaction_score", F.rand() * 1.0 + 3.8)
+daily_perf_df = daily_perf_df.withColumn("weather_condition", F.lit(np.random.choice(['sunny', 'cloudy', 'rainy', 'snowy'])))
+daily_perf_df = daily_perf_df.withColumn("temperature_high", F.lit(random.randint(40, 90)))
+daily_perf_df = daily_perf_df.withColumn("precipitation_inches", F.when(F.col("weather_condition") == 'rainy', F.rand() * 2.0).otherwise(0.0))
+daily_perf_df = daily_perf_df.withColumn("local_events", F.when(F.rand() > 0.9, F.array(F.lit(random.choice(['sports_game', 'concert', 'festival'])))).otherwise(F.array()))
+
+# Ensure columns are in the correct order for the schema
+final_df = daily_perf_df.select(
+    "store_id",
+    "business_date",
+    "total_revenue",
+    "transaction_count",
+    "average_ticket",
+    "revenue_per_seat",
+    "in_store_revenue",
+    "digital_revenue",
+    "delivery_revenue",
+    "avg_service_time",
+    "staff_hours_scheduled",
+    "staff_hours_actual",
+    "food_cost_pct",
+    "waste_amount",
+    "new_customers",
+    "returning_customers",
+    "loyalty_redemptions",
+    "avg_satisfaction_score",
+    "weather_condition",
+    "temperature_high",
+    "precipitation_inches",
+    "local_events"
+)
+
+# Drop the table and save
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.daily_store_performance")
+final_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.gold.daily_store_performance")
+
+print(f"✓ Generated {final_df.count()} daily performance records")
 
 # COMMAND ----------
 

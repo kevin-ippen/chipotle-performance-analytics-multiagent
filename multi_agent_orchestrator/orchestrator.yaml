@@ -1,0 +1,27 @@
+models:
+  supervisor_endpoint: databricks-claude-sonnet-4
+  small_router_endpoint: databricks-llama-3-8b-instruct
+
+genie:
+  spaces:
+    ExecutiveDashboard: { id: "exec_kpis" }
+    StorePerformance:   { id: "store_perf" }
+    CustomerAnalytics:  { id: "cust_analytics" }
+    MarketIntel:        { id: "market_intel" }
+
+vector_search:
+  strategy_index:   "main.sbintelligence.strategy_idx"
+  operations_index: "main.sbintelligence.operations_idx"
+  research_index:   "main.sbintelligence.research_idx"
+
+ml_tools:
+  demand_forecast_v1: { serving_endpoint: "demand-forecast-v1" }
+  cannibalization_v2: { serving_endpoint: "cannibalization-v2" }
+
+limits:
+  mode_defaults:
+    fast:      { max_agents: 2, max_docs: 6, timeout_s: 20 }
+    balanced:  { max_agents: 3, max_docs: 10, timeout_s: 45 }
+    thorough:  { max_agents: 5, max_docs: 16, timeout_s: 90 }
+  retries: { max_attempts: 2, backoff: "exp" }
+  circuit_breaker: { error_rate_pct: 35, rolling_s: 60 }

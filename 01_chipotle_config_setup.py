@@ -1,18 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # Chipotle Analytics - Configuration & Setup
-# MAGIC 
+# MAGIC
 # MAGIC **Purpose**: Initialize Unity Catalog structure, create schemas, and define base table DDL
-# MAGIC 
+# MAGIC
 # MAGIC **Outputs**: 
 # MAGIC - Catalog: `chipotle_analytics`
 # MAGIC - Schemas: `bronze`, `silver`, `gold`, `ml_models`
 # MAGIC - Base table structures in gold layer
-# MAGIC 
+# MAGIC
 # MAGIC **Assumptions**: 
 # MAGIC - User has CREATE CATALOG privileges
 # MAGIC - Unity Catalog enabled workspace
-# MAGIC 
+# MAGIC
 # MAGIC **Parameters**: 
 # MAGIC - catalog_name: Target catalog (default: chipotle_analytics)
 # MAGIC - reset_catalog: Drop and recreate if True (default: False)
@@ -80,6 +80,19 @@ spark.sql(f"USE CATALOG {CATALOG}")
 
 # COMMAND ----------
 
+# COMMAND ----------
+# MAGIC %md ## Step 2: Gold Layer - Core Tables DDL
+
+# COMMAND ----------
+
+# Drop existing tables to ensure a clean slate and prevent schema mismatch errors from previous runs
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.transactions")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.customer_profiles")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.store_locations")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.daily_store_performance")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.menu_items")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.campaigns")
+
 # Transactions table
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {CATALOG}.gold.transactions (
@@ -90,10 +103,10 @@ spark.sql(f"""
         order_date DATE NOT NULL,
         channel STRING NOT NULL,
         order_type STRING NOT NULL,
-        total_amount DECIMAL(8,2) NOT NULL,
-        tax_amount DECIMAL(6,2),
-        tip_amount DECIMAL(6,2),
-        discount_amount DECIMAL(6,2),
+        total_amount DOUBLE NOT NULL,  -- Changed from DECIMAL
+        tax_amount DOUBLE,             -- Changed from DECIMAL
+        tip_amount DOUBLE,             -- Changed from DECIMAL
+        discount_amount DOUBLE,        -- Changed from DECIMAL
         payment_method STRING,
         promotion_codes ARRAY<STRING>,
         delivery_partner STRING,
@@ -103,14 +116,10 @@ spark.sql(f"""
             item_id: STRING,
             item_name: STRING,
             category: STRING,
-            base_price: DECIMAL(5,2),
+            base_price: DOUBLE,        -- Changed from DECIMAL
             modifications: ARRAY<STRING>,
             quantity: INT
-        >>,
-        CONSTRAINT pk_order PRIMARY KEY (order_id),
-        CONSTRAINT valid_channel CHECK (channel IN ('in_store', 'app', 'web', 'catering')),
-        CONSTRAINT valid_order_type CHECK (order_type IN ('pickup', 'delivery', 'dine_in')),
-        CONSTRAINT positive_amount CHECK (total_amount > 0)
+        >>
     )
     USING DELTA
     PARTITIONED BY (order_date)
@@ -135,9 +144,9 @@ spark.sql(f"""
         lifestyle STRING,
         loyalty_tier STRING,
         points_balance INT,
-        lifetime_spend DECIMAL(10,2),
+        lifetime_spend DOUBLE,      -- Changed from DECIMAL
         visit_frequency STRING,
-        avg_order_value DECIMAL(6,2),
+        avg_order_value DOUBLE,     -- Changed from DECIMAL
         preferred_proteins ARRAY<STRING>,
         dietary_preferences ARRAY<STRING>,
         app_user BOOLEAN,
@@ -145,11 +154,8 @@ spark.sql(f"""
         push_notifications BOOLEAN,
         social_media_follower BOOLEAN,
         referrals_made INT,
-        churn_risk_score FLOAT,
-        customer_segment STRING,
-        CONSTRAINT pk_customer PRIMARY KEY (customer_id),
-        CONSTRAINT valid_segment CHECK (customer_segment IN ('power_user', 'loyal_regular', 'price_sensitive', 'occasional', 'at_risk')),
-        CONSTRAINT valid_loyalty CHECK (loyalty_tier IN ('bronze', 'silver', 'gold', 'platinum'))
+        churn_risk_score DOUBLE,    -- Changed from FLOAT
+        customer_segment STRING
     )
     USING DELTA
     CLUSTER BY (customer_segment, zip_code)
@@ -172,9 +178,9 @@ spark.sql(f"""
         parking_spaces INT,
         population_3mi INT,
         median_income_3mi INT,
-        college_students_pct FLOAT,
-        working_professionals_pct FLOAT,
-        families_pct FLOAT,
+        college_students_pct DOUBLE,          -- Changed from FLOAT
+        working_professionals_pct DOUBLE,     -- Changed from FLOAT
+        families_pct DOUBLE,                  -- Changed from FLOAT
         open_date DATE,
         store_format STRING,
         seating_capacity INT,
@@ -184,10 +190,7 @@ spark.sql(f"""
         fast_casual_competitors_1mi INT,
         direct_competitors_3mi INT,
         restaurant_density_1mi INT,
-        active_flag BOOLEAN,
-        CONSTRAINT pk_store PRIMARY KEY (store_id),
-        CONSTRAINT valid_format CHECK (store_format IN ('standard', 'drive_thru', 'urban_compact')),
-        CONSTRAINT valid_trade_area CHECK (trade_area_type IN ('urban', 'suburban', 'university', 'mall'))
+        active_flag BOOLEAN
     )
     USING DELTA
     COMMENT 'Store locations with characteristics and demographics'
@@ -198,29 +201,28 @@ spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {CATALOG}.gold.daily_store_performance (
         store_id STRING NOT NULL,
         business_date DATE NOT NULL,
-        total_revenue DECIMAL(10,2),
+        total_revenue DOUBLE,         -- Changed from DECIMAL
         transaction_count INT,
-        average_ticket DECIMAL(6,2),
-        revenue_per_seat DECIMAL(8,2),
-        in_store_revenue DECIMAL(8,2),
-        digital_revenue DECIMAL(8,2),
-        catering_revenue DECIMAL(8,2),
-        delivery_revenue DECIMAL(8,2),
-        avg_service_time FLOAT,
+        average_ticket DOUBLE,        -- Changed from DECIMAL
+        revenue_per_seat DOUBLE,      -- Changed from DECIMAL
+        in_store_revenue DOUBLE,      -- Changed from DECIMAL
+        digital_revenue DOUBLE,       -- Changed from DECIMAL
+        catering_revenue DOUBLE,      -- Changed from DECIMAL
+        delivery_revenue DOUBLE,      -- Changed from DECIMAL
+        avg_service_time DOUBLE,      -- Changed from FLOAT
         peak_hour_throughput INT,
-        staff_hours_scheduled FLOAT,
-        staff_hours_actual FLOAT,
-        food_cost_pct FLOAT,
-        waste_amount DECIMAL(6,2),
+        staff_hours_scheduled DOUBLE, -- Changed from FLOAT
+        staff_hours_actual DOUBLE,    -- Changed from FLOAT
+        food_cost_pct DOUBLE,         -- Changed from FLOAT
+        waste_amount DOUBLE,          -- Changed from DECIMAL
         new_customers INT,
         returning_customers INT,
         loyalty_redemptions INT,
-        avg_satisfaction_score FLOAT,
+        avg_satisfaction_score DOUBLE,  -- Changed from FLOAT
         weather_condition STRING,
         temperature_high INT,
-        precipitation_inches FLOAT,
-        local_events ARRAY<STRING>,
-        CONSTRAINT pk_daily_perf PRIMARY KEY (store_id, business_date)
+        precipitation_inches DOUBLE,  -- Changed from FLOAT
+        local_events ARRAY<STRING>
     )
     USING DELTA
     PARTITIONED BY (business_date)
@@ -235,20 +237,18 @@ spark.sql(f"""
         item_name STRING NOT NULL,
         category STRING NOT NULL,
         subcategory STRING,
-        base_price DECIMAL(5,2) NOT NULL,
-        cost_of_goods DECIMAL(5,2),
-        margin_pct FLOAT,
+        base_price DOUBLE NOT NULL,   -- Changed from DECIMAL
+        cost_of_goods DOUBLE,         -- Changed from DECIMAL
+        margin_pct DOUBLE,            -- Changed from FLOAT
         calories INT,
-        protein_g FLOAT,
-        carbs_g FLOAT,
-        fat_g FLOAT,
+        protein_g DOUBLE,             -- Changed from FLOAT
+        carbs_g DOUBLE,               -- Changed from FLOAT
+        fat_g DOUBLE,                 -- Changed from FLOAT
         sodium_mg INT,
         allergens ARRAY<STRING>,
         dietary_flags ARRAY<STRING>,
         active_flag BOOLEAN,
-        last_updated TIMESTAMP,
-        CONSTRAINT pk_item PRIMARY KEY (item_id),
-        CONSTRAINT valid_category CHECK (category IN ('entree', 'protein', 'side', 'beverage', 'dessert'))
+        last_updated TIMESTAMP
     )
     USING DELTA
     COMMENT 'Menu items with pricing and nutritional info'
@@ -261,8 +261,8 @@ spark.sql(f"""
         campaign_name STRING,
         campaign_type STRING,
         promotion_type STRING,
-        discount_amount DECIMAL(5,2),
-        minimum_purchase DECIMAL(5,2),
+        discount_amount DOUBLE,       -- Changed from DECIMAL
+        minimum_purchase DOUBLE,      -- Changed from DECIMAL
         eligible_items ARRAY<STRING>,
         promo_code STRING,
         target_segments ARRAY<STRING>,
@@ -271,15 +271,214 @@ spark.sql(f"""
         start_date DATE,
         end_date DATE,
         announcement_date DATE,
-        total_budget DECIMAL(10,2),
-        media_spend DECIMAL(10,2),
-        discount_budget DECIMAL(10,2),
+        total_budget DOUBLE,          -- Changed from DECIMAL
+        media_spend DOUBLE,           -- Changed from DECIMAL
+        discount_budget DOUBLE,       -- Changed from DECIMAL
         target_redemptions INT,
-        target_roi FLOAT,
-        target_new_customers INT,
-        CONSTRAINT pk_campaign PRIMARY KEY (campaign_id),
-        CONSTRAINT valid_campaign_type CHECK (campaign_type IN ('national', 'regional', 'local', 'digital_only')),
-        CONSTRAINT valid_promo_type CHECK (promotion_type IN ('discount', 'bogo', 'free_item', 'points_multiplier'))
+        target_roi DOUBLE,            -- Changed from FLOAT
+        target_new_customers INT
+    )
+    USING DELTA
+    COMMENT 'Marketing campaigns and promotions'
+""")
+
+# COMMAND ----------
+
+# COMMAND ----------
+# MAGIC %md ## Step 2: Gold Layer - Core Tables DDL
+
+# COMMAND ----------
+
+# Drop existing tables to ensure a clean slate and prevent schema mismatch errors from previous runs
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.transactions")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.customer_profiles")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.store_locations")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.daily_store_performance")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.menu_items")
+spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.campaigns")
+
+# Transactions table
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.transactions (
+        order_id STRING NOT NULL,
+        store_id STRING NOT NULL,
+        customer_id STRING,
+        order_timestamp TIMESTAMP NOT NULL,
+        order_date DATE NOT NULL,
+        channel STRING NOT NULL,
+        order_type STRING NOT NULL,
+        total_amount DOUBLE NOT NULL,
+        tax_amount DOUBLE,
+        tip_amount DOUBLE,
+        discount_amount DOUBLE,
+        payment_method STRING,
+        promotion_codes ARRAY<STRING>,
+        delivery_partner STRING,
+        order_prep_time_minutes INT,
+        customer_wait_time_minutes INT,
+        order_items ARRAY<STRUCT<
+            item_id: STRING,
+            item_name: STRING,
+            category: STRING,
+            base_price: DOUBLE,
+            modifications: ARRAY<STRING>,
+            quantity: INT
+        >>
+    )
+    USING DELTA
+    CLUSTER BY (order_date, store_id, customer_id)
+    COMMENT 'Core transaction data for all Chipotle orders'
+    TBLPROPERTIES (
+        'delta.autoOptimize.optimizeWrite' = 'true',
+        'delta.autoOptimize.autoCompact' = 'true'
+    )
+""")
+
+# Customer profiles table
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.customer_profiles (
+        customer_id STRING NOT NULL,
+        registration_date DATE,
+        registration_channel STRING,
+        age_range STRING,
+        income_bracket STRING,
+        household_size INT,
+        zip_code STRING,
+        lifestyle STRING,
+        loyalty_tier STRING,
+        points_balance INT,
+        lifetime_spend DOUBLE,
+        visit_frequency STRING,
+        avg_order_value DOUBLE,
+        preferred_proteins ARRAY<STRING>,
+        dietary_preferences ARRAY<STRING>,
+        app_user BOOLEAN,
+        email_subscriber BOOLEAN,
+        push_notifications BOOLEAN,
+        social_media_follower BOOLEAN,
+        referrals_made INT,
+        churn_risk_score DOUBLE,
+        customer_segment STRING
+    )
+    USING DELTA
+    CLUSTER BY (customer_segment, zip_code)
+    COMMENT 'Customer profiles with demographics and behavior'
+""")
+
+# Store locations table
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.store_locations (
+        store_id STRING NOT NULL,
+        store_number INT,
+        address STRING,
+        city STRING,
+        state STRING,
+        zip_code STRING,
+        latitude DOUBLE,
+        longitude DOUBLE,
+        trade_area_type STRING,
+        drive_thru BOOLEAN,
+        parking_spaces INT,
+        population_3mi INT,
+        median_income_3mi INT,
+        college_students_pct DOUBLE,
+        working_professionals_pct DOUBLE,
+        families_pct DOUBLE,
+        open_date DATE,
+        store_format STRING,
+        seating_capacity INT,
+        kitchen_capacity_score INT,
+        staff_count_avg INT,
+        manager_tenure_months INT,
+        fast_casual_competitors_1mi INT,
+        direct_competitors_3mi INT,
+        restaurant_density_1mi INT,
+        active_flag BOOLEAN
+    )
+    USING DELTA
+    COMMENT 'Store locations with characteristics and demographics'
+""")
+
+# Daily store performance
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.daily_store_performance (
+        store_id STRING NOT NULL,
+        business_date DATE NOT NULL,
+        total_revenue DOUBLE,
+        transaction_count INT,
+        average_ticket DOUBLE,
+        revenue_per_seat DOUBLE,
+        in_store_revenue DOUBLE,
+        digital_revenue DOUBLE,
+        catering_revenue DOUBLE,
+        delivery_revenue DOUBLE,
+        avg_service_time DOUBLE,
+        peak_hour_throughput INT,
+        staff_hours_scheduled DOUBLE,
+        staff_hours_actual DOUBLE,
+        food_cost_pct DOUBLE,
+        waste_amount DOUBLE,
+        new_customers INT,
+        returning_customers INT,
+        loyalty_redemptions INT,
+        avg_satisfaction_score DOUBLE,
+        weather_condition STRING,
+        temperature_high INT,
+        precipitation_inches DOUBLE,
+        local_events ARRAY<STRING>
+    )
+    USING DELTA
+    CLUSTER BY (business_date, store_id)
+    COMMENT 'Daily store performance metrics'
+""")
+
+# Menu items table
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.menu_items (
+        item_id STRING NOT NULL,
+        item_name STRING NOT NULL,
+        category STRING NOT NULL,
+        subcategory STRING,
+        base_price DOUBLE NOT NULL,
+        cost_of_goods DOUBLE,
+        margin_pct DOUBLE,
+        calories INT,
+        protein_g DOUBLE,
+        carbs_g DOUBLE,
+        fat_g DOUBLE,
+        sodium_mg INT,
+        allergens ARRAY<STRING>,
+        dietary_flags ARRAY<STRING>,
+        active_flag BOOLEAN,
+        last_updated TIMESTAMP
+    )
+    USING DELTA
+    COMMENT 'Menu items with pricing and nutritional info'
+""")
+
+# Campaigns table  
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.campaigns (
+        campaign_id STRING NOT NULL,
+        campaign_name STRING,
+        campaign_type STRING,
+        promotion_type STRING,
+        discount_amount DOUBLE,
+        minimum_purchase DOUBLE,
+        eligible_items ARRAY<STRING>,
+        promo_code STRING,
+        target_segments ARRAY<STRING>,
+        geographic_scope ARRAY<STRING>,
+        channel_restrictions ARRAY<STRING>,
+        start_date DATE,
+        end_date DATE,
+        announcement_date DATE,
+        total_budget DOUBLE,
+        media_spend DOUBLE,
+        discount_budget DOUBLE,
+        target_redemptions INT,
+        target_roi DOUBLE,
+        target_new_customers INT
     )
     USING DELTA
     COMMENT 'Marketing campaigns and promotions'
@@ -291,35 +490,38 @@ spark.sql(f"""
 
 # COMMAND ----------
 
+# COMMAND ----------
+# MAGIC %md ## Step 3: Aggregation Tables
+
+# COMMAND ----------
+
 # Monthly store performance aggregation
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {CATALOG}.gold.store_performance_monthly (
         store_id STRING NOT NULL,
         year_month STRING NOT NULL,
-        total_revenue DECIMAL(10,2),
-        revenue_growth_pct FLOAT,
-        revenue_vs_budget_pct FLOAT,
-        market_share_est_pct FLOAT,
+        total_revenue DOUBLE,
+        revenue_growth_pct DOUBLE,
+        revenue_vs_budget_pct DOUBLE,
+        market_share_est_pct DOUBLE,
         unique_customers INT,
         new_customers INT,
-        customer_retention_rate FLOAT,
-        avg_visits_per_customer FLOAT,
-        nps_score FLOAT,
-        avg_ticket DECIMAL(6,2),
-        transactions_per_day FLOAT,
-        digital_mix_pct FLOAT,
-        food_cost_pct FLOAT,
-        labor_cost_pct FLOAT,
-        vs_region_avg_pct FLOAT,
-        vs_similar_stores_pct FLOAT,
-        vs_national_avg_pct FLOAT,
+        customer_retention_rate DOUBLE,
+        avg_visits_per_customer DOUBLE,
+        nps_score DOUBLE,
+        avg_ticket DOUBLE,
+        transactions_per_day DOUBLE,
+        digital_mix_pct DOUBLE,
+        food_cost_pct DOUBLE,
+        labor_cost_pct DOUBLE,
+        vs_region_avg_pct DOUBLE,
+        vs_similar_stores_pct DOUBLE,
+        vs_national_avg_pct DOUBLE,
         percentile_ranking INT,
-        calculated_timestamp TIMESTAMP,
-        CONSTRAINT pk_monthly_perf PRIMARY KEY (store_id, year_month)
+        calculated_timestamp TIMESTAMP
     )
     USING DELTA
-    PARTITIONED BY (year_month)
-    CLUSTER BY (store_id)
+    CLUSTER BY (year_month, store_id)
     COMMENT 'Pre-aggregated monthly store performance'
 """)
 
@@ -329,21 +531,75 @@ spark.sql(f"""
         segment_name STRING NOT NULL,
         year_month STRING NOT NULL,
         segment_size INT,
-        avg_monthly_visits FLOAT,
-        avg_order_value DECIMAL(6,2),
-        lifetime_value DECIMAL(8,2),
-        churn_rate_pct FLOAT,
+        avg_monthly_visits DOUBLE,
+        avg_order_value DOUBLE,
+        lifetime_value DOUBLE,
+        churn_rate_pct DOUBLE,
         preferred_dayparts ARRAY<STRING>,
-        channel_mix MAP<STRING, FLOAT>,
-        protein_preferences MAP<STRING, FLOAT>,
-        promotion_response_rate FLOAT,
-        segment_growth_pct FLOAT,
-        revenue_contribution_pct FLOAT,
-        acquisition_cost DECIMAL(6,2),
-        CONSTRAINT pk_segment_monthly PRIMARY KEY (segment_name, year_month)
+        channel_mix MAP<STRING, DOUBLE>,
+        protein_preferences MAP<STRING, DOUBLE>,
+        promotion_response_rate DOUBLE,
+        segment_growth_pct DOUBLE,
+        revenue_contribution_pct DOUBLE,
+        acquisition_cost DOUBLE
     )
     USING DELTA
-    PARTITIONED BY (year_month)
+    CLUSTER BY (year_month)
+    COMMENT 'Pre-aggregated customer segment analysis'
+""")
+
+# COMMAND ----------
+
+# Monthly store performance aggregation
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.store_performance_monthly (
+        store_id STRING NOT NULL,
+        year_month STRING NOT NULL,
+        total_revenue DOUBLE,
+        revenue_growth_pct DOUBLE,
+        revenue_vs_budget_pct DOUBLE,
+        market_share_est_pct DOUBLE,
+        unique_customers INT,
+        new_customers INT,
+        customer_retention_rate DOUBLE,
+        avg_visits_per_customer DOUBLE,
+        nps_score DOUBLE,
+        avg_ticket DOUBLE,
+        transactions_per_day DOUBLE,
+        digital_mix_pct DOUBLE,
+        food_cost_pct DOUBLE,
+        labor_cost_pct DOUBLE,
+        vs_region_avg_pct DOUBLE,
+        vs_similar_stores_pct DOUBLE,
+        vs_national_avg_pct DOUBLE,
+        percentile_ranking INT,
+        calculated_timestamp TIMESTAMP
+    )
+    USING DELTA
+    CLUSTER BY (year_month, store_id)
+    COMMENT 'Pre-aggregated monthly store performance'
+""")
+
+# Customer segments monthly aggregation
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.customer_segments_monthly (
+        segment_name STRING NOT NULL,
+        year_month STRING NOT NULL,
+        segment_size INT,
+        avg_monthly_visits DOUBLE,
+        avg_order_value DOUBLE,
+        lifetime_value DOUBLE,
+        churn_rate_pct DOUBLE,
+        preferred_dayparts ARRAY<STRING>,
+        channel_mix MAP<STRING, DOUBLE>,
+        protein_preferences MAP<STRING, DOUBLE>,
+        promotion_response_rate DOUBLE,
+        segment_growth_pct DOUBLE,
+        revenue_contribution_pct DOUBLE,
+        acquisition_cost DOUBLE
+    )
+    USING DELTA
+    CLUSTER BY (year_month)
     COMMENT 'Pre-aggregated customer segment analysis'
 """)
 
