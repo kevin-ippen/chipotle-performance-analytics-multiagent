@@ -189,114 +189,473 @@ print(f"✓ Created {stores_df.count()} stores")
 
 # COMMAND ----------
 
-# Customer segment definitions
+# --- Fast & parallel customer generation (Spark-native) ---
+
+from pyspark.sql import functions as F
+from pyspark.sql import types as T
+
+# Tuning (adjust to your cluster/data)
+spark.conf.set("spark.sql.shuffle.partitions", max(200, spark.sparkContext.defaultParallelism * 2))
+spark.conf.set("spark.databricks.delta.optimizeWrite", "true")
+spark.conf.set("spark.databricks.delta.autoCompact", "true")
+
 segments_config = {
-    'power_user': {'pct': 0.15, 'visits': 52, 'aov': 14.50, 'digital': 0.90},
-    'loyal_regular': {'pct': 0.25, 'visits': 26, 'aov': 11.75, 'digital': 0.70},
-    'occasional': {'pct': 0.45, 'visits': 12, 'aov': 10.25, 'digital': 0.45},
-    'price_sensitive': {'pct': 0.15, 'visits': 6, 'aov': 8.75, 'digital': 0.35}
+    'power_user':     {'pct': 0.15, 'visits': 52, 'aov': 14.50, 'digital': 0.90},
+    'loyal_regular':  {'pct': 0.25, 'visits': 26, 'aov': 11.75, 'digital': 0.70},
+    'occasional':     {'pct': 0.45, 'visits': 12, 'aov': 10.25, 'digital': 0.45},
+    'price_sensitive':{'pct': 0.15, 'visits':  6, 'aov':  8.75, 'digital': 0.35},
 }
 
-# Calculate total customers needed (approximate based on visits)
+# Precompute totals (driver-side small arithmetic is fine)
 avg_visits_per_customer = sum(s['pct'] * s['visits'] for s in segments_config.values())
 days_in_period = (END_DATE - START_DATE).days
 num_stores = len(stores_data)
-daily_transactions_per_store = 150  # Average
+daily_transactions_per_store = 150
 total_transactions = num_stores * days_in_period * daily_transactions_per_store * SAMPLE_PCT
 total_customers = int(total_transactions / avg_visits_per_customer)
 
 print(f"Generating ~{total_customers:,} customers for ~{int(total_transactions):,} transactions")
 
-customers_data = []
-customer_counter = 1
+# Small dim for stores -> Spark DF (broadcastable)
+stores_df = spark.createDataFrame(stores_data)  # expects 'zip_code' present
+stores_df = F.broadcast(stores_df.select("zip_code").distinct())
 
-for segment, config in segments_config.items():
-    segment_size = int(total_customers * config['pct'])
-    
-    for _ in range(segment_size):
-        customer_id = f"CUST_{customer_counter:08d}"
-        
-        # Age and income correlations
-        if segment == 'power_user':
-            age_range = np.random.choice(['25-34', '35-44', '45-54'], p=[0.40, 0.35, 0.25])
-            income = np.random.choice(['75k_100k', 'over_100k'], p=[0.40, 0.60])
-            loyalty = np.random.choice(['gold', 'platinum'], p=[0.40, 0.60])
-        elif segment == 'loyal_regular':
-            age_range = np.random.choice(['25-34', '35-44', '45-54'], p=[0.35, 0.40, 0.25])
-            income = np.random.choice(['50k_75k', '75k_100k', 'over_100k'], p=[0.30, 0.40, 0.30])
-            loyalty = np.random.choice(['silver', 'gold'], p=[0.60, 0.40])
-        elif segment == 'occasional':
-            age_range = np.random.choice(['18-24', '25-34', '35-44', '45-54', '55+'], p=[0.25, 0.30, 0.25, 0.15, 0.05])
-            income = np.random.choice(['under_50k', '50k_75k', '75k_100k'], p=[0.35, 0.40, 0.25])
-            loyalty = np.random.choice(['bronze', 'silver'], p=[0.70, 0.30])
-        else:  # price_sensitive
-            age_range = np.random.choice(['18-24', '25-34', '35-44'], p=[0.40, 0.35, 0.25])
-            income = np.random.choice(['under_50k', '50k_75k'], p=[0.60, 0.40])
-            loyalty = 'bronze'
-        
-        # Lifestyle correlations
-        if income in ['75k_100k', 'over_100k']:
-            lifestyle = np.random.choice(['health_conscious', 'convenience', 'premium'], p=[0.40, 0.40, 0.20])
-        else:
-            lifestyle = np.random.choice(['value_seeker', 'convenience'], p=[0.60, 0.40])
-        
-        customers_data.append({
-            'customer_id': customer_id,
-            'registration_date': fake.date_between(start_date=START_DATE, end_date=END_DATE),
-            'registration_channel': np.random.choice(['app', 'web', 'in_store'], p=[0.45, 0.30, 0.25]),
-            'age_range': age_range,
-            'income_bracket': income,
-            'household_size': int(random.randint(1, 4)),
-            'zip_code': random.choice(stores_data)['zip_code'],  # Near a store
-            'lifestyle': lifestyle,
-            'loyalty_tier': loyalty,
-            'points_balance': int(random.randint(0, 5000)),
-            'lifetime_spend': float(config['aov'] * config['visits'] * random.uniform(0.8, 2.5)),
-            'visit_frequency': {52: 'weekly', 26: 'biweekly', 12: 'monthly', 6: 'occasional'}[config['visits']],
-            'avg_order_value': float(config['aov'] * random.uniform(0.9, 1.1)),
-            'preferred_proteins': random.sample(['chicken', 'steak', 'carnitas', 'barbacoa', 'sofritas'], k=random.randint(1, 3)),
-            'dietary_preferences': random.sample(['none', 'vegetarian', 'keto', 'high_protein', 'low_sodium'], k=random.randint(0, 2)),
-            'app_user': random.random() < config['digital'],
-            'email_subscriber': random.random() < 0.6,
-            'push_notifications': random.random() < config['digital'] * 0.7,
-            'social_media_follower': random.random() < 0.3,
-            'referrals_made': int(np.random.poisson(1)),
-            'churn_risk_score': float(0.1) if segment == 'power_user' else (float(0.7) if segment == 'price_sensitive' else float(random.uniform(0.2, 0.5))),
-            'customer_segment': segment
-        })
-        
-        customer_counter += 1
+# Segment cutpoints
+p_power     = segments_config['power_user']['pct']
+p_loyal     = p_power + segments_config['loyal_regular']['pct']
+p_occasional= p_loyal + segments_config['occasional']['pct']
+# price_sensitive = remainder
 
-# Create DataFrame and save
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, BooleanType, DateType, ArrayType
-schema = StructType([
-    StructField('customer_id', StringType(), True),
-    StructField('registration_date', DateType(), True),
-    StructField('registration_channel', StringType(), True),
-    StructField('age_range', StringType(), True),
-    StructField('income_bracket', StringType(), True),
-    StructField('household_size', IntegerType(), True),
-    StructField('zip_code', StringType(), True),
-    StructField('lifestyle', StringType(), True),
-    StructField('loyalty_tier', StringType(), True),
-    StructField('points_balance', IntegerType(), True),
-    StructField('lifetime_spend', DoubleType(), True),
-    StructField('visit_frequency', StringType(), True),
-    StructField('avg_order_value', DoubleType(), True),
-    StructField('preferred_proteins', ArrayType(StringType()), True),
-    StructField('dietary_preferences', ArrayType(StringType()), True),
-    StructField('app_user', BooleanType(), True),
-    StructField('email_subscriber', BooleanType(), True),
-    StructField('push_notifications', BooleanType(), True),
-    StructField('social_media_follower', BooleanType(), True),
-    StructField('referrals_made', IntegerType(), True),
-    StructField('churn_risk_score', DoubleType(), True),
-    StructField('customer_segment', StringType(), True)
-])
+# Base DF with parallelism; seed rand() for reproducibility if desired
+base = (
+    spark.range(0, total_customers)
+         .repartition(max(512, spark.sparkContext.defaultParallelism * 4))
+         .withColumn("r", F.rand(42))
+         .withColumn(
+             "customer_segment",
+             F.when(F.col("r") < p_power, "power_user")
+              .when(F.col("r") < p_loyal, "loyal_regular")
+              .when(F.col("r") < p_occasional, "occasional")
+              .otherwise("price_sensitive")
+         )
+         .drop("r")
+)
 
-customers_df = spark.createDataFrame(customers_data, schema=schema)
-customers_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.gold.customer_profiles")
-print(f"✓ Created {customers_df.count()} customers")
+# Handy lookups as literal maps
+seg_to_visits = F.create_map([F.lit(k) if i%2==0 else F.lit(v['visits'])
+                              for i,(k,v) in enumerate(segments_config.items())])
+seg_to_aov    = F.create_map([F.lit(k) if i%2==0 else F.lit(v['aov'])
+                              for i,(k,v) in enumerate(segments_config.items())])
+seg_to_dig    = F.create_map([F.lit(k) if i%2==0 else F.lit(v['digital'])
+                              for i,(k,v) in enumerate(segments_config.items())])
+
+# Random helpers
+rnd = F.rand(123)
+rnd2= F.rand(456)
+rnd3= F.rand(789)
+
+# Registration date within [START_DATE, END_DATE]
+start_lit = F.to_date(F.lit(str(START_DATE)))
+registration_date = F.expr(f"date_add(to_date('{START_DATE:%Y-%m-%d}'), cast(rand(99)*{days_in_period} as int))")
+
+# Age range by segment (probabilities encoded as thresholds)
+def choose_age(seg_col):
+    r = F.rand(1001)
+    return (
+        F.when(seg_col=="power_user",
+               F.when(r < 0.40, "25-34").when(r < 0.75, "35-44").otherwise("45-54"))
+         .when(seg_col=="loyal_regular",
+               F.when(r < 0.35, "25-34").when(r < 0.75, "35-44").otherwise("45-54"))
+         .when(seg_col=="occasional",
+               F.when(r < 0.25, "18-24").when(r < 0.55, "25-34").when(r < 0.80, "35-44")
+                .when(r < 0.95, "45-54").otherwise("55+"))
+         .otherwise(  # price_sensitive
+               F.when(r < 0.40, "18-24").when(r < 0.75, "25-34").otherwise("35-44"))
+    )
+
+def choose_income(seg_col):
+    r = F.rand(1002)
+    return (
+        F.when(seg_col=="power_user",
+               F.when(r < 0.40, "75k_100k").otherwise("over_100k"))
+         .when(seg_col=="loyal_regular",
+               F.when(r < 0.30, "50k_75k").when(r < 0.70, "75k_100k").otherwise("over_100k"))
+         .when(seg_col=="occasional",
+               F.when(r < 0.35, "under_50k").when(r < 0.75, "50k_75k").otherwise("75k_100k"))
+         .otherwise(  # price_sensitive
+               F.when(r < 0.60, "under_50k").otherwise("50k_75k"))
+    )
+
+# Loyalty tier
+def choose_loyalty(seg_col):
+    r = F.rand(1003)
+    return (
+        F.when(seg_col=="power_user",
+               F.when(r < 0.40, "gold").otherwise("platinum"))
+         .when(seg_col=="loyal_regular",
+               F.when(r < 0.60, "silver").otherwise("gold"))
+         .when(seg_col=="occasional", F.when(r < 0.70, "bronze").otherwise("silver"))
+         .otherwise(F.lit("bronze"))
+    )
+
+income = choose_income(F.col("customer_segment"))
+loyalty = choose_loyalty(F.col("customer_segment"))
+
+# Lifestyle depends on income bracket
+lifestyle = (
+    F.when(income.isin("75k_100k","over_100k"),
+           F.when(rnd < 0.40, "health_conscious").when(rnd < 0.80, "convenience").otherwise("premium"))
+     .otherwise(F.when(rnd < 0.60, "value_seeker").otherwise("convenience"))
+)
+
+# Visit frequency label from visits count
+visits_col = seg_to_visits[F.col("customer_segment")]
+visit_freq = F.when(visits_col==52, "weekly")\
+              .when(visits_col==26, "biweekly")\
+              .when(visits_col==12, "monthly")\
+              .otherwise("occasional")
+
+# Helper to pick k random proteins using shuffle+slice
+proteins = F.array(*[F.lit(x) for x in ['chicken','steak','carnitas','barbacoa','sofritas']])
+k_proteins = (F.floor(rnd2*3)+1).cast("int")  # 1..3
+preferred_proteins = F.expr("slice(shuffle(array('chicken','steak','carnitas','barbacoa','sofritas')), 1, int(rand(456)*3)+1)")
+
+# Dietary preferences: sample up to 2; include 'none' sometimes
+diet_opts = F.array(*[F.lit(x) for x in ['vegetarian','keto','high_protein','low_sodium']])
+diet_count = (F.floor(rnd3*3)).cast("int")  # 0..2
+dietary_preferences = F.when(F.rand(111) < 0.5, F.array(F.lit("none"))) \
+                       .otherwise(F.expr("slice(shuffle(array('vegetarian','keto','high_protein','low_sodium')), 1, int(rand(789)*2))"))
+
+# Random booleans
+app_user            = F.rand(222) < (seg_to_dig[F.col("customer_segment")])
+email_subscriber    = F.rand(223) < 0.6
+push_notifications  = F.rand(224) < (seg_to_dig[F.col("customer_segment")] * F.lit(0.7))
+social_media        = F.rand(225) < 0.3
+
+# referrals ~ Poisson(1) approx via geometric trick (fast) or clamp of normal
+referrals = F.greatest(F.lit(0), (F.floor(-F.log(F.rand(226))).cast("int")))  # approx Poisson(1)
+
+# churn risk rule
+churn_risk = (
+    F.when(F.col("customer_segment")=="power_user", F.lit(0.1))
+     .when(F.col("customer_segment")=="price_sensitive", F.lit(0.7))
+     .otherwise(F.rand(227)*0.3 + 0.2)
+)
+
+# Per-customer AOV and lifetime spend
+aov_base = seg_to_aov[F.col("customer_segment")]
+avg_order_value = aov_base * (F.rand(228)*0.2 + 0.9)   # +-10%
+lifetime_spend  = aov_base * visits_col * (F.rand(229)*1.7 + 0.8)
+
+# Household size, points, id
+household_size  = (F.floor(F.rand(230)*4)+1).cast("int")
+points_balance  = (F.floor(F.rand(231)*5001)).cast("int")
+customer_id     = F.format_string("CUST_%08d", F.col("id")+1)
+
+# Zip code: random join
+zip_join = base.withColumn("zip_key", (F.floor(F.rand(300)*1e12)).cast("long"))
+stores_with_key = stores_df.withColumn("zip_key", (F.floor(F.rand(301)*1e12)).cast("long"))
+# Join via modulo bucket to randomize mapping without skew
+zip_bucketed = (
+    base.withColumn("bucket", (F.pmod(F.col("id"), F.lit(1000)))).join(
+        stores_df.withColumn("bucket", (F.pmod(F.floor(F.rand(555)*1e12), F.lit(1000)))),
+        on="bucket", how="left"
+    ).drop("bucket")
+)
+
+# Assemble final DF
+customers_df = (
+    base.alias("b")
+    .join(zip_bucketed.select("id","zip_code").alias("z"), on="id", how="left")
+    .withColumn("customer_id", customer_id)
+    .withColumn("registration_date", registration_date)
+    .withColumn("registration_channel",
+                F.when(F.rand(232) < 0.45, "app")
+                 .when(F.rand(233) < 0.75, "web").otherwise("in_store"))
+    .withColumn("age_range", choose_age(F.col("customer_segment")))
+    .withColumn("income_bracket", income)
+    .withColumn("household_size", household_size)
+    .withColumn("zip_code", F.coalesce(F.col("z.zip_code"), F.lit(stores_data[0]['zip_code'])))
+    .withColumn("lifestyle", lifestyle)
+    .withColumn("loyalty_tier", loyalty)
+    .withColumn("points_balance", points_balance)
+    .withColumn("lifetime_spend", lifetime_spend.cast("double"))
+    .withColumn("visit_frequency", visit_freq)
+    .withColumn("avg_order_value", avg_order_value.cast("double"))
+    .withColumn("preferred_proteins", preferred_proteins)
+    .withColumn("dietary_preferences", dietary_preferences)
+    .withColumn("app_user", app_user.cast("boolean"))
+    .withColumn("email_subscriber", email_subscriber.cast("boolean"))
+    .withColumn("push_notifications", push_notifications.cast("boolean"))
+    .withColumn("social_media_follower", social_media.cast("boolean"))
+    .withColumn("referrals_made", referrals.cast("int"))
+    .withColumn("churn_risk_score", churn_risk.cast("double"))
+    .select(
+        "customer_id","registration_date","registration_channel","age_range",
+        "income_bracket","household_size","zip_code","lifestyle","loyalty_tier",
+        "points_balance","lifetime_spend","visit_frequency","avg_order_value",
+        "preferred_proteins","dietary_preferences","app_user","email_subscriber",
+        "push_notifications","social_media_follower","referrals_made",
+        "churn_risk_score","customer_segment"
+    )
+)
+
+# Write without triggering extra actions; avoid .count() here for speed
+target_table = f"{CATALOG}.gold.customer_profiles"
+customers_df.write.mode("overwrite").saveAsTable(target_table)
+print(f"✓ Created ~{total_customers:,} customers -> {target_table}")
+
+
+# COMMAND ----------
+
+# COMMAND ----------
+# MAGIC %md ## Step 2: Generate Customer Profiles
+# MAGIC
+# MAGIC **Purpose**: Generate realistic synthetic data representing 300 stores (~10% of Chipotle US operations)
+# MAGIC
+# MAGIC **Outputs**: Populated gold layer tables with 3 years of transaction history
+# MAGIC - ~50M transactions
+# MAGIC - ~5M unique customers
+# MAGIC - 300 store locations across US
+# MAGIC
+# MAGIC **Assumptions**:
+# MAGIC - Tables created from 01_config notebook
+# MAGIC - Unity Catalog permissions in place
+# MAGIC
+# MAGIC **Parameters**:
+# MAGIC - start_date: Beginning of data generation (default: 2022-01-01)
+# MAGIC - end_date: End of data generation (default: 2024-12-31)
+# MAGIC - sample_pct: Percentage of full dataset to generate for testing (default: 100)
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+from pyspark.sql import types as T
+from pyspark.sql.window import Window
+from datetime import datetime
+from faker import Faker
+import random
+import numpy as np
+
+fake = Faker()
+Faker.seed(42)
+random.seed(42)
+np.random.seed(42)
+
+# Widget parameters (same as original)
+dbutils.widgets.text("catalog_name", "chipotle_analytics", "Catalog Name")
+dbutils.widgets.text("start_date", "2022-01-01", "Start Date (YYYY-MM-DD)")
+dbutils.widgets.text("end_date", "2024-12-31", "End Date (YYYY-MM-DD)")
+dbutils.widgets.text("sample_pct", "100", "Sample Percentage (1-100)")
+
+# Get parameters
+CATALOG = dbutils.widgets.get("catalog_name")
+START_DATE = datetime.strptime(dbutils.widgets.get("start_date"), "%Y-%m-%d")
+END_DATE = datetime.strptime(dbutils.widgets.get("end_date"), "%Y-%m-%d")
+SAMPLE_PCT = int(dbutils.widgets.get("sample_pct")) / 100.0
+
+spark.sql(f"USE CATALOG {CATALOG}")
+
+
+# --- Fast & parallel customer generation (Spark-native) ---
+stores_df_temp = spark.read.table(f"{CATALOG}.gold.store_locations").select("zip_code").distinct()
+stores_zip_codes_list = stores_df_temp.rdd.flatMap(lambda x: x).collect()
+broadcast_zip_codes = spark.sparkContext.broadcast(stores_zip_codes_list)
+
+# Tuning (adjust to your cluster/data)
+spark.conf.set("spark.sql.shuffle.partitions", max(200, spark.sparkContext.defaultParallelism * 2))
+spark.conf.set("spark.databricks.delta.optimizeWrite", "true")
+spark.conf.set("spark.databricks.delta.autoCompact", "true")
+
+segments_config = {
+    'power_user':     {'pct': 0.15, 'visits': 52, 'aov': 14.50, 'digital': 0.90},
+    'loyal_regular':  {'pct': 0.25, 'visits': 26, 'aov': 11.75, 'digital': 0.70},
+    'occasional':     {'pct': 0.45, 'visits': 12, 'aov': 10.25, 'digital': 0.45},
+    'price_sensitive':{'pct': 0.15, 'visits':  6, 'aov':  8.75, 'digital': 0.35},
+}
+
+# Precompute totals (driver-side small arithmetic is fine)
+avg_visits_per_customer = sum(s['pct'] * s['visits'] for s in segments_config.values())
+days_in_period = (END_DATE - START_DATE).days
+num_stores = stores_df_temp.count()
+daily_transactions_per_store = 150
+total_transactions = num_stores * days_in_period * daily_transactions_per_store * SAMPLE_PCT
+total_customers = int(total_transactions / avg_visits_per_customer)
+
+print(f"Generating ~{total_customers:,} customers for ~{int(total_transactions):,} transactions")
+
+# Segment cutpoints
+p_power     = segments_config['power_user']['pct']
+p_loyal     = p_power + segments_config['loyal_regular']['pct']
+p_occasional= p_loyal + segments_config['occasional']['pct']
+
+# Base DF with parallelism; seed rand() for reproducibility if desired
+base = (
+    spark.range(0, total_customers)
+         .repartition(max(512, spark.sparkContext.defaultParallelism * 4))
+         .withColumn("r", F.rand(42))
+         .withColumn(
+             "customer_segment",
+             F.when(F.col("r") < p_power, "power_user")
+              .when(F.col("r") < p_loyal, "loyal_regular")
+              .when(F.col("r") < p_occasional, "occasional")
+              .otherwise("price_sensitive")
+         )
+         .drop("r")
+)
+
+# Handy lookups as literal maps
+seg_to_visits = F.create_map([F.lit(k) if i%2==0 else F.lit(v['visits'])
+                              for i,(k,v) in enumerate(segments_config.items())])
+seg_to_aov    = F.create_map([F.lit(k) if i%2==0 else F.lit(v['aov'])
+                              for i,(k,v) in enumerate(segments_config.items())])
+seg_to_dig    = F.create_map([F.lit(k) if i%2==0 else F.lit(v['digital'])
+                              for i,(k,v) in enumerate(segments_config.items())])
+
+# Random helpers
+rnd = F.rand(123)
+rnd2= F.rand(456)
+rnd3= F.rand(789)
+
+# Registration date within [START_DATE, END_DATE]
+start_lit = F.to_date(F.lit(str(START_DATE)))
+registration_date = F.expr(f"date_add(to_date('{START_DATE:%Y-%m-%d}'), cast(rand(99)*{days_in_period} as int))")
+
+# Age range by segment (probabilities encoded as thresholds)
+def choose_age(seg_col):
+    r = F.rand(1001)
+    return (
+        F.when(seg_col=="power_user",
+               F.when(r < 0.40, "25-34").when(r < 0.75, "35-44").otherwise("45-54"))
+         .when(seg_col=="loyal_regular",
+               F.when(r < 0.35, "25-34").when(r < 0.75, "35-44").otherwise("45-54"))
+         .when(seg_col=="occasional",
+               F.when(r < 0.25, "18-24").when(r < 0.55, "25-34").when(r < 0.80, "35-44")
+                .when(r < 0.95, "45-54").otherwise("55+"))
+         .otherwise(  # price_sensitive
+               F.when(r < 0.40, "18-24").when(r < 0.75, "25-34").otherwise("35-44"))
+    )
+
+def choose_income(seg_col):
+    r = F.rand(1002)
+    return (
+        F.when(seg_col=="power_user",
+               F.when(r < 0.40, "75k_100k").otherwise("over_100k"))
+         .when(seg_col=="loyal_regular",
+               F.when(r < 0.30, "50k_75k").when(r < 0.70, "75k_100k").otherwise("over_100k"))
+         .when(seg_col=="occasional",
+               F.when(r < 0.35, "under_50k").when(r < 0.75, "50k_75k").otherwise("75k_100k"))
+         .otherwise(  # price_sensitive
+               F.when(r < 0.60, "under_50k").otherwise("50k_75k"))
+    )
+
+# Loyalty tier
+def choose_loyalty(seg_col):
+    r = F.rand(1003)
+    return (
+        F.when(seg_col=="power_user",
+               F.when(r < 0.40, "gold").otherwise("platinum"))
+         .when(seg_col=="loyal_regular",
+               F.when(r < 0.60, "silver").otherwise("gold"))
+         .when(seg_col=="occasional", F.when(r < 0.70, "bronze").otherwise("silver"))
+         .otherwise(F.lit("bronze"))
+    )
+
+income = choose_income(F.col("customer_segment"))
+loyalty = choose_loyalty(F.col("customer_segment"))
+
+# Lifestyle depends on income bracket
+lifestyle = (
+    F.when(income.isin("75k_100k","over_100k"),
+           F.when(rnd < 0.40, "health_conscious").when(rnd < 0.80, "convenience").otherwise("premium"))
+     .otherwise(F.when(rnd < 0.60, "value_seeker").otherwise("convenience"))
+)
+
+# Visit frequency label from visits count
+visits_col = seg_to_visits[F.col("customer_segment")]
+visit_freq = F.when(visits_col==52, "weekly")\
+              .when(visits_col==26, "biweekly")\
+              .when(visits_col==12, "monthly")\
+              .otherwise("occasional")
+
+# Helper to pick k random proteins using shuffle+slice
+proteins = F.array(*[F.lit(x) for x in ['chicken','steak','carnitas','barbacoa','sofritas']])
+k_proteins = (F.floor(rnd2*3)+1).cast("int")  # 1..3
+preferred_proteins = F.expr("slice(shuffle(array('chicken','steak','carnitas','barbacoa','sofritas')), 1, int(rand(456)*3)+1)")
+
+# Dietary preferences: sample up to 2; include 'none' sometimes
+diet_opts = F.array(*[F.lit(x) for x in ['vegetarian','keto','high_protein','low_sodium']])
+diet_count = (F.floor(rnd3*3)).cast("int")  # 0..2
+dietary_preferences = F.when(F.rand(111) < 0.5, F.array(F.lit("none"))) \
+                       .otherwise(F.expr("slice(shuffle(array('vegetarian','keto','high_protein','low_sodium')), 1, int(rand(789)*2))"))
+
+# Random booleans
+app_user            = F.rand(222) < (seg_to_dig[F.col("customer_segment")])
+email_subscriber    = F.rand(223) < 0.6
+push_notifications  = F.rand(224) < (seg_to_dig[F.col("customer_segment")] * F.lit(0.7))
+social_media        = F.rand(225) < 0.3
+
+# referrals ~ Poisson(1) approx via geometric trick (fast) or clamp of normal
+referrals = F.greatest(F.lit(0), (F.floor(-F.log(F.rand(226))).cast("int")))  # approx Poisson(1)
+
+# churn risk rule
+churn_risk = (
+    F.when(F.col("customer_segment")=="power_user", F.lit(0.1))
+     .when(F.col("customer_segment")=="price_sensitive", F.lit(0.7))
+     .otherwise(F.rand(227)*0.3 + 0.2)
+)
+
+# Per-customer AOV and lifetime spend
+aov_base = seg_to_aov[F.col("customer_segment")]
+avg_order_value = aov_base * (F.rand(228)*0.2 + 0.9)   # +-10%
+lifetime_spend  = aov_base * visits_col * (F.rand(229)*1.7 + 0.8)
+
+# Household size, points, id
+household_size  = (F.floor(F.rand(230)*4)+1).cast("int")
+points_balance  = (F.floor(F.rand(231)*5001)).cast("int")
+customer_id     = F.format_string("CUST_%08d", F.col("id")+1)
+
+
+# Assemble final DF with guaranteed matching zip codes
+customers_df = (
+    base
+    .withColumn("customer_id", customer_id)
+    .withColumn("registration_date", registration_date)
+    .withColumn("registration_channel",
+                F.when(F.rand(232) < 0.45, "app")
+                 .when(F.rand(233) < 0.75, "web").otherwise("in_store"))
+    .withColumn("age_range", choose_age(F.col("customer_segment")))
+    .withColumn("income_bracket", income)
+    .withColumn("household_size", household_size)
+    .withColumn("zip_code", F.lit(F.element_at(F.array(*[F.lit(z) for z in broadcast_zip_codes.value]), (F.floor(F.rand(300) * len(broadcast_zip_codes.value)) + 1).cast("int"))))
+    .withColumn("lifestyle", lifestyle)
+    .withColumn("loyalty_tier", loyalty)
+    .withColumn("points_balance", points_balance)
+    .withColumn("lifetime_spend", lifetime_spend.cast("double"))
+    .withColumn("visit_frequency", visit_freq)
+    .withColumn("avg_order_value", avg_order_value.cast("double"))
+    .withColumn("preferred_proteins", preferred_proteins)
+    .withColumn("dietary_preferences", dietary_preferences)
+    .withColumn("app_user", app_user.cast("boolean"))
+    .withColumn("email_subscriber", email_subscriber.cast("boolean"))
+    .withColumn("push_notifications", push_notifications.cast("boolean"))
+    .withColumn("social_media_follower", social_media.cast("boolean"))
+    .withColumn("referrals_made", referrals.cast("int"))
+    .withColumn("churn_risk_score", churn_risk.cast("double"))
+    .select(
+        "customer_id","registration_date","registration_channel","age_range",
+        "income_bracket","household_size","zip_code","lifestyle","loyalty_tier",
+        "points_balance","lifetime_spend","visit_frequency","avg_order_value",
+        "preferred_proteins","dietary_preferences","app_user","email_subscriber",
+        "push_notifications","social_media_follower","referrals_made",
+        "churn_risk_score","customer_segment"
+    )
+)
+
+# Write without triggering extra actions; avoid .count() here for speed
+target_table = f"{CATALOG}.gold.customer_profiles"
+customers_df.write.mode("overwrite").saveAsTable(target_table)
+print(f"✓ Created ~{total_customers:,} customers -> {target_table}")
 
 # COMMAND ----------
 
@@ -410,216 +769,563 @@ print(f"✓ Created {menu_df.count()} menu items")
 
 # COMMAND ----------
 
-# Transaction generation parameters
-seasonal_factors = {
-    1: 0.92, 2: 0.94, 3: 0.98,  # Q1 - post-holiday slowdown
-    4: 1.02, 5: 1.06, 6: 1.08,  # Q2 - spring pickup
-    7: 1.12, 8: 1.10, 9: 1.08,  # Q3 - summer peak
-    10: 1.02, 11: 0.98, 12: 0.95  # Q4 - holiday impact
-}
+from pyspark.sql.window import Window
 
-weekday_factors = {
-    0: 0.85,  # Monday
-    1: 0.90,  # Tuesday  
-    2: 0.95,  # Wednesday
-    3: 1.05,  # Thursday
-    4: 1.15,  # Friday
-    5: 1.20,  # Saturday
-    6: 1.10   # Sunday
-}
+# COMMAND ----------
 
-daypart_distribution = {
-    'breakfast': (7, 10, 0.08),
-    'lunch': (11, 14, 0.45),
-    'dinner': (17, 20, 0.35),
-    'late_night': (20, 22, 0.12)
-}
+# COMMAND ----------
+# MAGIC %md ## Step 4: Generate Transactions (deterministic count via store × date grid)
 
-# Build transactions date by date (chunked for memory efficiency)
-chunk_size = 7  # Process a week at a time
-current_date = START_DATE
-transactions_to_insert = []
+# COMMAND ----------
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
-# Explicitly load customer and menu data for use in this step
-customers_data = spark.read.table(f"{CATALOG}.gold.customer_profiles").collect()
-menu_items = spark.read.table(f"{CATALOG}.gold.menu_items").collect()
-stores_data = spark.read.table(f"{CATALOG}.gold.store_locations").collect()
+# ======== Tuning ========
+parts = max(512, spark.sparkContext.defaultParallelism * 4)
+spark.conf.set("spark.sql.shuffle.partitions", parts)
+spark.conf.set("spark.databricks.delta.optimizeWrite", "true")
+spark.conf.set("spark.databricks.delta.autoCompact", "true")
 
+target_table = f"{CATALOG}.gold.transactions"
 
-while current_date <= END_DATE:
-    chunk_end = min(current_date + timedelta(days=chunk_size), END_DATE)
-    
-    for store in stores_data[:int(len(stores_data) * SAMPLE_PCT)]:
-        while current_date <= chunk_end:
-            # Calculate daily transaction count
-            base_transactions = 150  # Base daily average
-            
-            # Apply factors
-            seasonal = seasonal_factors.get(current_date.month, 1.0)
-            weekday = weekday_factors.get(current_date.weekday(), 1.0)
-            
-            # Store performance tier adjustment
-            if store['kitchen_capacity_score'] >= 8:
-                store_factor = 1.3
-            elif store['kitchen_capacity_score'] >= 6:
-                store_factor = 1.0
-            else:
-                store_factor = 0.75
-            
-            daily_transactions = int(base_transactions * seasonal * weekday * store_factor * random.uniform(0.8, 1.2))
-            
-            # Generate transactions for each daypart
-            for daypart, (start_hour, end_hour, daypart_pct) in daypart_distribution.items():
-                daypart_transactions = int(daily_transactions * daypart_pct)
-                
-                for _ in range(daypart_transactions):
-                    # Select random customer (weighted by segment)
-                    customer = random.choice(customers_data)
-                    
-                    # Build order
-                    order_items = []
-                    
-                    # Main entree
-                    entree = random.choice([m for m in menu_items if m['category'] == 'entree'])
-                    protein = random.choice([m for m in menu_items if m['category'] == 'protein'])
-                    
-                    # Order customizations
-                    modifications = random.sample(['extra_rice', 'extra_beans', 'extra_cheese', 
-                                                   'no_rice', 'no_beans', 'light_cheese'], 
-                                                  k=random.randint(0, 2))
-                    
-                    order_items.append({
-                        'item_id': entree['item_id'],
-                        'item_name': entree['item_name'],
-                        'category': entree['category'],
-                        'base_price': float(entree['base_price'] + protein['base_price']),
-                        'modifications': modifications,
-                        'quantity': 1
-                    })
-                    
-                    # Add sides (30% chance)
-                    if random.random() < 0.3:
-                        side = random.choice([m for m in menu_items if m['category'] == 'side'])
-                        order_items.append({
-                            'item_id': side['item_id'],
-                            'item_name': side['item_name'],
-                            'category': side['category'],
-                            'base_price': float(side['base_price']),
-                            'modifications': [],
-                            'quantity': 1
-                        })
-                    
-                    # Add beverage (40% chance)
-                    if random.random() < 0.4:
-                        beverage = random.choice([m for m in menu_items if m['category'] == 'beverage'])
-                        order_items.append({
-                            'item_id': beverage['item_id'],
-                            'item_name': beverage['item_name'],
-                            'category': beverage['category'],
-                            'base_price': float(beverage['base_price']),
-                            'modifications': [],
-                            'quantity': 1
-                        })
-                    
-                    # Calculate totals
-                    subtotal = sum(item['base_price'] * item['quantity'] for item in order_items)
-                    tax = float(subtotal * 0.0875)  # 8.75% tax
-                    
-                    # Determine channel based on customer digital adoption
-                    if customer['app_user'] and random.random() < 0.6:
-                        channel = random.choice(['app', 'web'])
-                        order_type = random.choices(['pickup', 'delivery'], weights=[0.7, 0.3])[0]
-                    else:
-                        channel = 'in_store'
-                        order_type = 'dine_in'
-                    
-                    # Tips for delivery/pickup
-                    tip = float(0)
-                    if order_type == 'delivery':
-                        tip = float(subtotal * random.uniform(0.10, 0.20))
-                    elif order_type == 'pickup' and random.random() < 0.15:
-                        tip = float(subtotal * random.uniform(0.05, 0.15))
-                    
-                    # Apply promotions (10% chance)
-                    discount = float(0)
-                    promo_codes = []
-                    if random.random() < 0.10:
-                        discount = float(subtotal * random.uniform(0.10, 0.25))
-                        promo_codes = [random.choice(['BOGO50', 'SAVE20', 'FREECHIPS', 'STUDENT15'])]
-                    
-                    # Create transaction
-                    order_time = current_date.replace(
-                        hour=random.randint(start_hour, end_hour-1),
-                        minute=random.randint(0, 59)
-                    )
-                    
-                    transactions_to_insert.append({
-                        'order_id': f"ORD_{current_date.strftime('%Y%m%d')}_{store['store_id']}_{random.randint(1000, 9999)}",
-                        'store_id': store['store_id'],
-                        'customer_id': customer['customer_id'],
-                        'order_timestamp': order_time,
-                        'order_date': current_date.date(),
-                        'channel': channel,
-                        'order_type': order_type,
-                        'total_amount': float(subtotal + tax + tip - discount),
-                        'tax_amount': tax,
-                        'tip_amount': tip,
-                        'discount_amount': discount,
-                        'payment_method': random.choice(['credit_card', 'debit_card', 'apple_pay', 'google_pay', 'cash']),
-                        'promotion_codes': promo_codes,
-                        'delivery_partner': random.choice(['uber_eats', 'doordash', 'grubhub', None]) if order_type == 'delivery' else None,
-                        'order_prep_time_minutes': int(random.randint(5, 15)),
-                        'customer_wait_time_minutes': int(random.randint(2, 20)),
-                        'order_items': order_items
-                    })
-            
-            current_date += timedelta(days=1)
-        
-    
-    # Define explicit schema to avoid inference errors
-    from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, TimestampType, DateType, ArrayType
-    
-    items_schema = ArrayType(
-        StructType([
-            StructField("item_id", StringType(), True),
-            StructField("item_name", StringType(), True),
-            StructField("category", StringType(), True),
-            StructField("base_price", DoubleType(), True),
-            StructField("modifications", ArrayType(StringType()), True),
-            StructField("quantity", IntegerType(), True)
-        ])
-    )
-    
-    transactions_schema = StructType([
-        StructField("order_id", StringType(), True),
-        StructField("store_id", StringType(), True),
-        StructField("customer_id", StringType(), True),
-        StructField("order_timestamp", TimestampType(), True),
-        StructField("order_date", DateType(), True),
-        StructField("channel", StringType(), True),
-        StructField("order_type", StringType(), True),
-        StructField("total_amount", DoubleType(), True),
-        StructField("tax_amount", DoubleType(), True),
-        StructField("tip_amount", DoubleType(), True),
-        StructField("discount_amount", DoubleType(), True),
-        StructField("payment_method", StringType(), True),
-        StructField("promotion_codes", ArrayType(StringType()), True),
-        StructField("delivery_partner", StringType(), True),
-        StructField("order_prep_time_minutes", IntegerType(), True),
-        StructField("customer_wait_time_minutes", IntegerType(), True),
-        StructField("order_items", items_schema, True)
+# ======== Inputs ========
+stores_base = spark.read.table(f"{CATALOG}.gold.store_locations") \
+    .select("store_id", "kitchen_capacity_score", "zip_code")
+
+customers_df = spark.read.table(f"{CATALOG}.gold.customer_profiles") \
+    .select("customer_id", "customer_segment", "app_user", "zip_code")
+
+menu_df = spark.read.table(f"{CATALOG}.gold.menu_items") \
+    .select("item_id","item_name","category","base_price")
+
+# Stable row ids for customer uniform pick (broadcast for cheap joins)
+customers_df = customers_df.withColumn("cust_rn", F.row_number().over(Window.orderBy(F.xxhash64("customer_id"))))
+cust_count = customers_df.count()
+customers_df = F.broadcast(customers_df)
+
+# Build literal arrays of structs per category (menu is tiny)
+def cat_array(cat: str):
+    rows = (menu_df.where(F.col("category")==F.lit(cat))
+                   .select("item_id","item_name","category","base_price")
+                   .collect())
+    if not rows:
+        return F.array()
+    return F.array(*[
+        F.struct(
+            F.lit(r["item_id"]).alias("item_id"),
+            F.lit(r["item_name"]).alias("item_name"),
+            F.lit(r["category"]).alias("category"),
+            F.lit(float(r["base_price"])).alias("base_price")
+        ) for r in (row.asDict() for row in rows)
     ])
-    
-    # Insert chunk with explicit schema
-    if transactions_to_insert:
-        trans_df = spark.createDataFrame(transactions_to_insert, schema=transactions_schema)
-        trans_df.write.mode("append").saveAsTable(f"{CATALOG}.gold.transactions")
-        print(f"✓ Inserted {len(transactions_to_insert)} transactions up to {chunk_end.date()}")
-        transactions_to_insert = []
-    
-    current_date = chunk_end + timedelta(days=1)
 
-print(f"✓ Transaction generation complete")
+arr_entree   = cat_array("entree")
+arr_protein  = cat_array("protein")
+arr_side     = cat_array("side")
+arr_beverage = cat_array("beverage")
+
+# ======== Build store × date grid (INCLUSIVE range) ========
+days_in_period = (END_DATE - START_DATE).days + 1  # inclusive
+date_df = spark.sql(f"""
+  SELECT explode(sequence(
+      to_date('{START_DATE:%Y-%m-%d}'),
+      to_date('{END_DATE:%Y-%m-%d}'),
+      interval 1 day
+  )) AS order_date
+""")
+stores_full = stores_base  # don't sample stores; SAMPLE_PCT applies to txn count only
+
+grid = date_df.crossJoin(stores_full)
+
+# Per-day target = round(150 × SAMPLE_PCT)
+daily_target = int(round(150.0 * SAMPLE_PCT))
+grid = grid.withColumn("daily_target", F.lit(daily_target).cast("int")) \
+           .filter(F.col("daily_target") > 0)
+
+# Expand to transactions exactly: sequence(1, daily_target)
+grid = grid.withColumn("seq", F.expr("sequence(1, daily_target)"))
+tx = (grid
+      .withColumn("seq", F.explode(F.col("seq")))
+      .withColumn("hash_id", F.xxhash64("store_id", "order_date", "seq"))
+      .drop("daily_target", "seq"))
+
+# Sanity print before heavy work
+expected_rows = stores_full.count() * date_df.count() * daily_target
+print(f"Expected rows (stores × days × daily_target): {expected_rows:,}")
+
+# ======== Bring a customer (uniform) ========
+tx = tx.withColumn(
+    "cust_pick",
+    (F.pmod(F.abs(F.col("hash_id")), F.lit(cust_count)) + F.lit(1)).cast("long")
+).join(
+    customers_df.select("customer_id","app_user","zip_code","cust_rn"),
+    on=(F.col("cust_pick")==F.col("cust_rn")),
+    how="left"
+).drop("cust_pick","cust_rn")
+
+# ======== Optional: reassign to a local store by customer ZIP (only if ZIP has stores) ========
+stores_by_zip_df = F.broadcast(
+    stores_base.groupBy("zip_code").agg(F.collect_list(F.col("store_id")).alias("local_stores"))
+)
+tx = tx.join(stores_by_zip_df, on="zip_code", how="left")
+tx = tx.withColumn("local_stores_safe", F.coalesce(F.col("local_stores"), F.array().cast("array<string>")))
+idx = (F.pmod(F.abs(F.col("hash_id")), F.greatest(F.size(F.col("local_stores_safe")), F.lit(1))) + F.lit(1)).cast("int")
+tx = tx.withColumn(
+    "store_id",
+    F.when(F.size(F.col("local_stores_safe")) > 0, F.element_at(F.col("local_stores_safe"), idx))
+     .otherwise(F.col("store_id"))
+).drop("local_stores","local_stores_safe","zip_code")
+
+# ======== Spread timestamps uniformly across the full range ========
+date_range_sec = days_in_period * 24 * 60 * 60
+tx = tx.withColumn(
+    "order_timestamp",
+    F.expr(f"timestampadd(SECOND, CAST(pmod(abs(hash_id), {date_range_sec}) AS INT), to_timestamp('{START_DATE:%Y-%m-%d}'))")
+).withColumn("order_date", F.to_date("order_timestamp"))
+
+# ======== Daypart (deterministic) ========
+daypart_rand = (
+    F.pmod(F.abs(F.xxhash64(F.col("hash_id"), F.lit(12345))), F.lit(10_000_000)) / F.lit(10_000_000.0)
+)
+tx = tx.withColumn("daypart_rand", daypart_rand)
+tx = tx.withColumn(
+    "daypart",
+    F.when(F.col("daypart_rand") < 0.08, F.lit("breakfast"))
+     .when(F.col("daypart_rand") < 0.08 + 0.45, F.lit("lunch"))
+     .when(F.col("daypart_rand") < 0.08 + 0.45 + 0.35, F.lit("dinner"))
+     .otherwise(F.lit("late_night"))
+).drop("daypart_rand")
+
+# ======== Channel / order_type ========
+channel = F.when(F.col("app_user") & (F.rand(301) < 0.6),
+                 F.when(F.rand(302) < 0.5, F.lit("app")).otherwise(F.lit("web"))) \
+           .otherwise(F.lit("in_store"))
+order_type = F.when(channel.isin("app","web"),
+                    F.when(F.rand(303) < 0.7, F.lit("pickup")).otherwise(F.lit("delivery"))) \
+              .otherwise(F.lit("dine_in"))
+
+# ======== Helpers to pick random struct from an array ========
+def pick_random(arr_expr, seed):
+    sz = F.size(arr_expr)
+    return F.element_at(arr_expr, (F.floor(F.rand(seed) * sz) + 1).cast("int"))
+
+entree  = pick_random(arr_entree,   401)
+protein = pick_random(arr_protein,  402)
+side    = pick_random(arr_side,     403)
+bev     = pick_random(arr_beverage, 404)
+
+# ======== Modifications & items (consistent schema) ========
+mods_pool = F.array(
+    F.lit("extra_rice"), F.lit("extra_beans"), F.lit("extra_cheese"),
+    F.lit("no_rice"), F.lit("no_beans"), F.lit("light_cheese")
+)
+mods_k  = (F.floor(F.rand(405) * 3)).cast("int")  # 0..2
+mods    = F.when(mods_k > 0, F.slice(F.shuffle(mods_pool), 1, mods_k)) \
+           .otherwise(F.array().cast("array<string>"))
+
+entree_plus = F.struct(
+    entree["item_id"].alias("item_id"),
+    entree["item_name"].alias("item_name"),
+    entree["category"].alias("category"),
+    (entree["base_price"].cast("double") + protein["base_price"].cast("double")).alias("base_price"),
+    mods.alias("modifications"),
+    F.lit(1).alias("quantity")
+)
+
+empty_mods = F.array().cast("array<string>")
+side_struct = F.struct(
+    side["item_id"].alias("item_id"),
+    side["item_name"].alias("item_name"),
+    side["category"].alias("category"),
+    side["base_price"].cast("double").alias("base_price"),
+    empty_mods.alias("modifications"),
+    F.lit(1).alias("quantity")
+)
+bev_struct = F.struct(
+    bev["item_id"].alias("item_id"),
+    bev["item_name"].alias("item_name"),
+    bev["category"].alias("category"),
+    bev["base_price"].cast("double").alias("base_price"),
+    empty_mods.alias("modifications"),
+    F.lit(1).alias("quantity")
+)
+
+order_items = F.array(entree_plus)
+order_items = F.when(F.rand(406) < 0.3, F.concat(order_items, F.array(side_struct))).otherwise(order_items)
+order_items = F.when(F.rand(407) < 0.4, F.concat(order_items, F.array(bev_struct))).otherwise(order_items)
+
+# ======== Monetary fields ========
+subtotal = F.aggregate(order_items, F.lit(0.0), lambda acc, x: acc + (x["base_price"] * x["quantity"]))
+tax = (subtotal * F.lit(0.0875)).cast("double")
+
+tip = F.when(F.col("order_type") == F.lit("delivery"), subtotal * (F.rand(408) * F.lit(0.10) + F.lit(0.10))) \
+       .when((F.col("order_type") == F.lit("pickup")) & (F.rand(409) < F.lit(0.15)), subtotal * (F.rand(410) * F.lit(0.10) + F.lit(0.05))) \
+       .otherwise(F.lit(0.0)).cast("double")
+
+discount = F.when(F.rand(411) < F.lit(0.10), subtotal * (F.rand(412) * F.lit(0.15) + F.lit(0.10))) \
+            .otherwise(F.lit(0.0)).cast("double")
+
+promo_codes = F.when(
+    discount > 0,
+    F.array(
+        F.element_at(
+            F.array(F.lit("BOGO50"), F.lit("SAVE20"), F.lit("FREECHIPS"), F.lit("STUDENT15")),
+            (F.floor(F.rand(413) * 4) + 1).cast("int")
+        )
+    )
+).otherwise(F.array().cast("array<string>"))
+
+total_amount = (subtotal + tax + tip - discount).cast("double")
+
+delivery_partner_choices = F.array(
+    F.lit("uber_eats"), F.lit("doordash"), F.lit("grubhub"), F.lit(None).cast("string")
+)
+delivery_partner = F.when(
+    F.col("order_type") == F.lit("delivery"),
+    F.element_at(delivery_partner_choices, (F.floor(F.rand(414) * 4) + 1).cast("int"))
+).otherwise(F.lit(None).cast("string"))
+
+# ======== Assemble final DF ========
+transactions_df = (
+    tx
+    .withColumn("channel", channel)
+    .withColumn("order_type", order_type)
+    .withColumn("order_items", order_items)
+    .withColumn("tax_amount", tax)
+    .withColumn("tip_amount", tip)
+    .withColumn("discount_amount", discount)
+    .withColumn("total_amount", total_amount)
+    .withColumn(
+        "payment_method",
+        F.element_at(
+            F.array(F.lit("credit_card"), F.lit("debit_card"), F.lit("apple_pay"), F.lit("google_pay"), F.lit("cash")),
+            (F.floor(F.rand(415) * 5) + 1).cast("int")
+        )
+    )
+    .withColumn("promotion_codes", promo_codes)
+    .withColumn("delivery_partner", delivery_partner)
+    .withColumn("order_prep_time_minutes", (F.floor(F.rand(416) * 11) + 5).cast("int"))
+    .withColumn("customer_wait_time_minutes", (F.floor(F.rand(417) * 19) + 2).cast("int"))
+    .withColumn("order_id",
+        F.concat(
+            F.lit("ORD_"),
+            F.date_format("order_date", "yyyyMMdd"),
+            F.lit("_"),
+            F.col("store_id"),
+            F.lit("_"),
+            (F.floor(F.rand(418) * 9000) + 1000).cast("int").cast("string")
+        )
+    )
+    .select(
+        "order_id","store_id","customer_id","order_timestamp","order_date",
+        "channel","order_type","total_amount","tax_amount","tip_amount","discount_amount",
+        "payment_method","promotion_codes","delivery_partner",
+        "order_prep_time_minutes","customer_wait_time_minutes","order_items"
+    )
+)
+
+# ======== Quick sanity: count BEFORE write (cheap scalar) ========
+planned = grid.agg(F.sum("daily_target")).collect()[0][0]
+print(f"Planned transactions (sum of daily_target): {planned:,}")
+
+# ======== Write (overwrite whole table; partition by date) ========
+spark.sql(f"DROP TABLE IF EXISTS {target_table}")
+transactions_df.write.mode("overwrite").option("overwriteSchema","true") \
+    .partitionBy("order_date").saveAsTable(target_table)
+
+# Post-write sanity (metadata count)
+post = spark.sql(f"SELECT COUNT(*) AS c FROM {target_table}").first()["c"]
+print(f"✓ Wrote {post:,} rows to {target_table}")
+
+
+# COMMAND ----------
+
+# COMMAND ----------
+# MAGIC %md ## Step 4: Generate Transactions
+
+# COMMAND ----------
+# --- Ultra-fast parallel transaction generator (Spark-native, no Python loops) ---
+
+from pyspark.sql import functions as F, types as T
+from pyspark.sql.window import Window
+
+# ======== Tuning knobs ========
+parts = max(512, spark.sparkContext.defaultParallelism * 4)
+spark.conf.set("spark.sql.shuffle.partitions", parts)
+spark.conf.set("spark.databricks.delta.optimizeWrite", "true")
+spark.conf.set("spark.databricks.delta.autoCompact", "true")
+
+target_table = f"{CATALOG}.gold.transactions"
+
+# ======== Inputs (small dims are broadcast) ========
+stores_df = spark.read.table(f"{CATALOG}.gold.store_locations") \
+    .select("store_id", "kitchen_capacity_score", "zip_code")
+if SAMPLE_PCT < 1.0:
+    stores_df = stores_df.where(F.xxhash64("store_id") % 100 < int(SAMPLE_PCT * 100))
+
+# Build local store lists per ZIP and broadcast
+stores_by_zip_df = (
+    stores_df.groupBy("zip_code")
+             .agg(F.collect_list(F.col("store_id")).alias("local_stores"))
+)
+stores_by_zip_df = F.broadcast(stores_by_zip_df)
+
+num_stores = stores_df.count()
+
+customers_df = spark.read.table(f"{CATALOG}.gold.customer_profiles") \
+    .select("customer_id", "customer_segment", "app_user", "zip_code")
+
+# Stable row numbers for O(1) random pick without shuffle (also broadcast)
+customers_df = customers_df.withColumn(
+    "cust_rn",
+    F.row_number().over(Window.orderBy(F.xxhash64("customer_id")))
+)
+cust_count = customers_df.count()
+customers_df = F.broadcast(customers_df)
+
+menu_df = spark.read.table(f"{CATALOG}.gold.menu_items") \
+    .select("item_id", "item_name", "category", "base_price")
+
+# Build literal arrays of structs per category (menu is tiny -> safe to collect)
+def cat_array(cat: str):
+    rows = (menu_df.where(F.col("category") == F.lit(cat))
+                   .select("item_id", "item_name", "category", "base_price")
+                   .collect())
+    if not rows:
+        return F.array()
+    literal_structs = [
+        F.struct(
+            F.lit(r["item_id"]).alias("item_id"),
+            F.lit(r["item_name"]).alias("item_name"),
+            F.lit(r["category"]).alias("category"),
+            F.lit(float(r["base_price"])).alias("base_price")
+        )
+        for r in (row.asDict() for row in rows)
+    ]
+    return F.array(*literal_structs)
+
+arr_entree   = cat_array("entree")
+arr_protein  = cat_array("protein")
+arr_side     = cat_array("side")
+arr_beverage = cat_array("beverage")
+
+# ======== Factors as literal maps (kept for possible later use) ========
+seasonal_map = F.create_map(
+    *[x for kv in {1: 0.92, 2: 0.94, 3: 0.98, 4: 1.02, 5: 1.06, 6: 1.08, 7: 1.12, 8: 1.10, 9: 1.08, 10: 1.02, 11: 0.98, 12: 0.95}.items()
+      for x in (F.lit(kv[0]), F.lit(kv[1]))]
+)
+# Spark dayofweek: 1=Sun ... 7=Sat
+weekday_map = F.create_map(
+    *[x for kv in {2: 0.85, 3: 0.90, 4: 0.95, 5: 1.05, 6: 1.15, 7: 1.20, 1: 1.10}.items()
+      for x in (F.lit(kv[0]), F.lit(kv[1]))]
+)
+
+# ======== Generate transactions, assign customers, and link to local stores ========
+days_in_period = (END_DATE - START_DATE).days + 1  # inclusive
+daily_transactions_per_store = 150
+total_transactions = int(num_stores * days_in_period * daily_transactions_per_store * SAMPLE_PCT)
+print(f"Generating a total of ~{total_transactions:,} transactions")
+
+tx = spark.range(0, total_transactions).repartition(parts)
+
+# Stable per-row hash to drive deterministic choices
+tx = tx.withColumn("hash_id", F.xxhash64("id"))
+
+# Randomly assign a customer and bring their zip
+tx = tx.withColumn(
+    "cust_pick",
+    (F.pmod(F.abs(F.col("hash_id")), F.lit(cust_count)) + F.lit(1)).cast("long")
+).join(
+    customers_df.select("customer_id", "app_user", "zip_code", "cust_rn"),
+    on=(F.col("cust_pick") == F.col("cust_rn")),
+    how="left"
+).drop("cust_pick", "cust_rn")
+
+# Join local stores by customer's ZIP; guarantee array typing
+tx = tx.join(stores_by_zip_df, on="zip_code", how="left")
+tx = tx.withColumn(
+    "local_stores_safe",
+    F.coalesce(F.col("local_stores"), F.array().cast("array<string>"))
+)
+
+# Deterministic index into local_stores_safe (no column-seeded rand)
+idx = (
+    F.pmod(F.abs(F.xxhash64(F.col("hash_id"))),
+           F.greatest(F.size(F.col("local_stores_safe")), F.lit(1)))
+    + F.lit(1)
+).cast("int")
+
+tx = tx.withColumn(
+    "store_id",
+    F.when(
+        F.size(F.col("local_stores_safe")) > 0,
+        F.element_at(F.col("local_stores_safe"), idx)
+    ).otherwise(F.lit(None).cast("string"))
+).drop("local_stores", "local_stores_safe", "zip_code")
+
+# Assign an order timestamp uniformly across the date range (proper timestamp math)
+date_range_sec = days_in_period * 24 * 60 * 60
+tx = tx.withColumn(
+    "order_timestamp",
+    F.expr(
+        f"timestampadd(SECOND, CAST(pmod(abs(xxhash64(hash_id)), {date_range_sec}) AS INT), to_timestamp('{START_DATE:%Y-%m-%d}'))"
+    )
+)
+tx = tx.withColumn("order_date", F.to_date("order_timestamp"))
+
+# Deterministic daypart draw in [0,1)
+daypart_rand = (
+    F.pmod(F.abs(F.xxhash64(F.col("hash_id"), F.lit(12345))), F.lit(10_000_000))
+    / F.lit(10_000_000.0)
+)
+tx = tx.withColumn("daypart_rand", daypart_rand)
+tx = tx.withColumn(
+    "daypart",
+    F.when(F.col("daypart_rand") < 0.08, F.lit("breakfast"))
+     .when(F.col("daypart_rand") < 0.08 + 0.45, F.lit("lunch"))
+     .when(F.col("daypart_rand") < 0.08 + 0.45 + 0.35, F.lit("dinner"))
+     .otherwise(F.lit("late_night"))
+).drop("daypart_rand")
+
+# ======== Channel / order_type (vectorized) ========
+channel = F.when(F.col("app_user") & (F.rand(301) < 0.6),
+                 F.when(F.rand(302) < 0.5, F.lit("app")).otherwise(F.lit("web"))) \
+           .otherwise(F.lit("in_store"))
+order_type = F.when(channel.isin("app", "web"),
+                    F.when(F.rand(303) < 0.7, F.lit("pickup")).otherwise(F.lit("delivery"))) \
+              .otherwise(F.lit("dine_in"))
+
+# ======== Helpers to pick random struct from an array ========
+def pick_random(arr_expr, seed):
+    sz = F.size(arr_expr)
+    idxp1 = (F.floor(F.rand(seed) * sz) + 1).cast("int")
+    return F.element_at(arr_expr, idxp1)
+
+entree  = pick_random(arr_entree,   401)
+protein = pick_random(arr_protein,  402)
+side    = pick_random(arr_side,     403)
+bev     = pick_random(arr_beverage, 404)
+
+# ======== Modifications & item structs (consistent schema) ========
+mods_pool = F.array(
+    F.lit("extra_rice"), F.lit("extra_beans"), F.lit("extra_cheese"),
+    F.lit("no_rice"), F.lit("no_beans"), F.lit("light_cheese")
+)
+mods_k  = (F.floor(F.rand(405) * 3)).cast("int")  # 0..2
+mods    = F.when(mods_k > 0, F.slice(F.shuffle(mods_pool), 1, mods_k)) \
+           .otherwise(F.array().cast("array<string>"))
+
+entree_plus = F.struct(
+    entree["item_id"].alias("item_id"),
+    entree["item_name"].alias("item_name"),
+    entree["category"].alias("category"),
+    (entree["base_price"].cast("double") + protein["base_price"].cast("double")).alias("base_price"),
+    mods.alias("modifications"),
+    F.lit(1).alias("quantity")
+)
+
+empty_mods = F.array().cast("array<string>")
+
+side_struct = F.struct(
+    side["item_id"].alias("item_id"),
+    side["item_name"].alias("item_name"),
+    side["category"].alias("category"),
+    side["base_price"].cast("double").alias("base_price"),
+    empty_mods.alias("modifications"),
+    F.lit(1).alias("quantity")
+)
+
+bev_struct = F.struct(
+    bev["item_id"].alias("item_id"),
+    bev["item_name"].alias("item_name"),
+    bev["category"].alias("category"),
+    bev["base_price"].cast("double").alias("base_price"),
+    empty_mods.alias("modifications"),
+    F.lit(1).alias("quantity")
+)
+
+order_items = F.array(entree_plus)
+order_items = F.when(F.rand(406) < 0.3, F.concat(order_items, F.array(side_struct))).otherwise(order_items)
+order_items = F.when(F.rand(407) < 0.4, F.concat(order_items, F.array(bev_struct))).otherwise(order_items)
+
+# ======== Monetary fields ========
+subtotal = F.aggregate(order_items, F.lit(0.0), lambda acc, x: acc + (x["base_price"] * x["quantity"]))
+tax = (subtotal * F.lit(0.0875)).cast("double")
+
+tip = F.when(F.col("order_type") == F.lit("delivery"), subtotal * (F.rand(408) * F.lit(0.10) + F.lit(0.10))) \
+       .when((F.col("order_type") == F.lit("pickup")) & (F.rand(409) < F.lit(0.15)), subtotal * (F.rand(410) * F.lit(0.10) + F.lit(0.05))) \
+       .otherwise(F.lit(0.0))
+tip = tip.cast("double")
+
+discount = F.when(F.rand(411) < F.lit(0.10), subtotal * (F.rand(412) * F.lit(0.15) + F.lit(0.10))).otherwise(F.lit(0.0)).cast("double")
+
+promo_codes = F.when(
+    discount > 0,
+    F.array(
+        F.element_at(
+            F.array(F.lit("BOGO50"), F.lit("SAVE20"), F.lit("FREECHIPS"), F.lit("STUDENT15")),
+            (F.floor(F.rand(413) * 4) + 1).cast("int")
+        )
+    )
+).otherwise(F.array().cast("array<string>"))
+
+total_amount = (subtotal + tax + tip - discount).cast("double")
+
+delivery_partner_choices = F.array(
+    F.lit("uber_eats"), F.lit("doordash"), F.lit("grubhub"), F.lit(None).cast("string")
+)
+delivery_partner = F.when(
+    F.col("order_type") == F.lit("delivery"),
+    F.element_at(delivery_partner_choices, (F.floor(F.rand(414) * 4) + 1).cast("int"))
+).otherwise(F.lit(None).cast("string"))
+
+# ======== Assemble final DF ========
+transactions_df = (
+    tx
+    .withColumn("channel", channel)
+    .withColumn("order_type", order_type)
+    .withColumn("order_items", order_items)
+    .withColumn("tax_amount", tax)
+    .withColumn("tip_amount", tip)
+    .withColumn("discount_amount", discount)
+    .withColumn("total_amount", total_amount)
+    .withColumn(
+        "payment_method",
+        F.element_at(
+            F.array(
+                F.lit("credit_card"), F.lit("debit_card"),
+                F.lit("apple_pay"), F.lit("google_pay"), F.lit("cash")
+            ),
+            (F.floor(F.rand(415) * 5) + 1).cast("int")
+        )
+    )
+    .withColumn("promotion_codes", promo_codes)
+    .withColumn("delivery_partner", delivery_partner)
+    .withColumn("order_prep_time_minutes", (F.floor(F.rand(416) * 11) + 5).cast("int"))
+    .withColumn("customer_wait_time_minutes", (F.floor(F.rand(417) * 19) + 2).cast("int"))
+    .withColumn("order_id",
+        F.concat(
+            F.lit("ORD_"),
+            F.date_format("order_date", "yyyyMMdd"),
+            F.lit("_"),
+            F.col("store_id"),
+            F.lit("_"),
+            (F.floor(F.rand(418) * 9000) + 1000).cast("int").cast("string")
+        )
+    )
+    .select(
+        "order_id", "store_id", "customer_id", "order_timestamp", "order_date",
+        "channel", "order_type", "total_amount", "tax_amount", "tip_amount", "discount_amount",
+        "payment_method", "promotion_codes", "delivery_partner",
+        "order_prep_time_minutes", "customer_wait_time_minutes", "order_items"
+    )
+)
+
+# ======== Write (partitioned by date) ========
+transactions_df.write.mode("overwrite").option("overwriteSchema", "true") \
+
+print("✓ Transaction generation complete (parallel + Spark-native)")
+
 
 # COMMAND ----------
 
@@ -627,78 +1333,125 @@ print(f"✓ Transaction generation complete")
 
 # COMMAND ----------
 
-# Import necessary functions and types
+# Fast, parallel daily store performance builder (Spark-native)
+
 from pyspark.sql import functions as F
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, DateType, ArrayType
-from datetime import timedelta, date
-import random
-import numpy as np
+from pyspark.sql.types import IntegerType
 
-# Create a list of all dates and stores
-start_date_obj = date.fromisoformat(START_DATE.strftime('%Y-%m-%d'))
-end_date_obj = date.fromisoformat(END_DATE.strftime('%Y-%m-%d'))
-all_dates = [start_date_obj + timedelta(days=x) for x in range((end_date_obj - start_date_obj).days + 1)]
+# ---------- Inputs ----------
+transactions_tbl = f"{CATALOG}.gold.transactions"
+stores_tbl       = f"{CATALOG}.gold.store_locations"
+target_tbl       = f"{CATALOG}.gold.daily_store_performance"
 
-date_store_pairs = []
-for d in all_dates:
-    for store in stores_data:
-        date_store_pairs.append((d, store['store_id']))
-
-# Create a DataFrame from the pairs to join with transactions
-date_store_df = spark.createDataFrame(date_store_pairs, ["business_date", "store_id"])
-
-# Aggregate transactions data in a single, efficient query
-daily_metrics_df = spark.sql(f"""
-    SELECT
-        store_id,
-        order_date AS business_date,
-        COUNT(order_id) AS transaction_count,
-        SUM(total_amount) AS total_revenue,
-        AVG(total_amount) AS average_ticket,
-        SUM(CASE WHEN channel IN ('app', 'web') THEN total_amount ELSE 0.0 END) AS digital_revenue,
-        SUM(CASE WHEN channel = 'in_store' THEN total_amount ELSE 0.0 END) AS in_store_revenue,
-        SUM(CASE WHEN order_type = 'delivery' THEN total_amount ELSE 0.0 END) AS delivery_revenue,
-        COUNT(DISTINCT customer_id) AS unique_customers
-    FROM {CATALOG}.gold.transactions
-    GROUP BY store_id, order_date
-""")
-
-# Join with stores data and fill in missing dates/stores with zeros
-daily_perf_df = date_store_df.join(
-    daily_metrics_df,
-    ["business_date", "store_id"],
-    "left"
-).fillna(0)
-
-# Load store attributes to add to the daily performance DataFrame
-store_attrs_df = stores_df.select(
+# Optional: respect SAMPLE_PCT if you’re sampling stores globally
+stores_df = spark.read.table(stores_tbl).select(
     "store_id", "seating_capacity", "store_format", "kitchen_capacity_score"
 )
+if "SAMPLE_PCT" in globals() and SAMPLE_PCT < 1.0:
+    stores_df = stores_df.where(F.xxhash64("store_id") % 100 < int(SAMPLE_PCT * 100))
 
-# Join the aggregated data with store attributes
-daily_perf_df = daily_perf_df.join(store_attrs_df, "store_id", "left")
+# ---------- Date × Store grid ----------
+date_df = spark.sql(f"""
+  SELECT explode(sequence(
+      to_date('{START_DATE:%Y-%m-%d}'),
+      to_date('{END_DATE:%Y-%m-%d}'),
+      interval 1 day
+  )) AS business_date
+""")
 
-# Add simulated metrics as UDFs or Spark functions for efficiency
-@F.udf(returnType=DoubleType())
-def calculate_revenue_per_seat(revenue, seating_capacity):
-    return float(revenue) / float(seating_capacity) if seating_capacity > 0 else 0.0
+date_store_df = date_df.crossJoin(stores_df.select("store_id"))
 
-daily_perf_df = daily_perf_df.withColumn("revenue_per_seat", calculate_revenue_per_seat(F.col("total_revenue"), F.col("seating_capacity")))
-daily_perf_df = daily_perf_df.withColumn("avg_service_time", F.rand() * 4.5 + 3.5)
-daily_perf_df = daily_perf_df.withColumn("staff_hours_scheduled", F.rand() * 40 + 80)
-daily_perf_df = daily_perf_df.withColumn("staff_hours_actual", F.rand() * 50 + 75)
-daily_perf_df = daily_perf_df.withColumn("food_cost_pct", F.rand() * 0.07 + 0.28)
-daily_perf_df = daily_perf_df.withColumn("waste_amount", F.rand() * 150 + 50)
-daily_perf_df = daily_perf_df.withColumn("new_customers", F.when(F.col("unique_customers") > 0, F.rand() * 20 + 5).otherwise(0).cast(IntegerType()))
-daily_perf_df = daily_perf_df.withColumn("returning_customers", F.when(F.col("unique_customers") > 0, F.col("unique_customers") - F.col("new_customers")).otherwise(0).cast(IntegerType()))
-daily_perf_df = daily_perf_df.withColumn("loyalty_redemptions", F.when(F.col("unique_customers") > 0, F.rand() * 40 + 10).otherwise(0).cast(IntegerType()))
-daily_perf_df = daily_perf_df.withColumn("avg_satisfaction_score", F.rand() * 1.0 + 3.8)
-daily_perf_df = daily_perf_df.withColumn("weather_condition", F.lit(np.random.choice(['sunny', 'cloudy', 'rainy', 'snowy'])))
-daily_perf_df = daily_perf_df.withColumn("temperature_high", F.lit(random.randint(40, 90)))
-daily_perf_df = daily_perf_df.withColumn("precipitation_inches", F.when(F.col("weather_condition") == 'rainy', F.rand() * 2.0).otherwise(0.0))
-daily_perf_df = daily_perf_df.withColumn("local_events", F.when(F.rand() > 0.9, F.array(F.lit(random.choice(['sports_game', 'concert', 'festival'])))).otherwise(F.array()))
+# ---------- Aggregate transactions ----------
+# Note: Spark day types — ensure order_date is DATE in the source table
+daily_metrics_df = (
+    spark.read.table(transactions_tbl)
+         .groupBy("store_id", F.col("order_date").alias("business_date"))
+         .agg(
+             F.count("order_id").alias("transaction_count"),
+             F.sum("total_amount").alias("total_revenue"),
+             F.avg("total_amount").alias("average_ticket"),
+             F.sum(F.when(F.col("channel").isin("app", "web"), F.col("total_amount")).otherwise(F.lit(0.0))).alias("digital_revenue"),
+             F.sum(F.when(F.col("channel") == "in_store", F.col("total_amount")).otherwise(F.lit(0.0))).alias("in_store_revenue"),
+             F.sum(F.when(F.col("order_type") == "delivery", F.col("total_amount")).otherwise(F.lit(0.0))).alias("delivery_revenue"),
+             F.countDistinct("customer_id").alias("unique_customers"),
+         )
+)
 
-# Ensure columns are in the correct order for the schema
+# ---------- Join to complete the grid & fill missing with zeros ----------
+daily_perf_df = (
+    date_store_df.join(daily_metrics_df, ["business_date", "store_id"], "left")
+                 .join(stores_df, "store_id", "left")
+)
+
+# Fill numeric nulls with 0, but leave averages alone (handle them via coalesce)
+daily_perf_df = (daily_perf_df
+    .withColumn("transaction_count", F.coalesce("transaction_count", F.lit(0)))
+    .withColumn("total_revenue",     F.coalesce("total_revenue", F.lit(0.0)))
+    .withColumn("digital_revenue",   F.coalesce("digital_revenue", F.lit(0.0)))
+    .withColumn("in_store_revenue",  F.coalesce("in_store_revenue", F.lit(0.0)))
+    .withColumn("delivery_revenue",  F.coalesce("delivery_revenue", F.lit(0.0)))
+    .withColumn("unique_customers",  F.coalesce("unique_customers", F.lit(0)))
+    .withColumn("average_ticket",
+        F.when(F.col("transaction_count") > 0,
+               F.coalesce("average_ticket", F.col("total_revenue") / F.col("transaction_count"))
+        ).otherwise(F.lit(0.0))
+    )
+)
+
+# ---------- Derived/simulated KPIs (Spark expressions only) ----------
+# revenue_per_seat: total_revenue / seating_capacity (guard divide-by-zero)
+daily_perf_df = daily_perf_df.withColumn(
+    "revenue_per_seat",
+    F.when(F.col("seating_capacity") > 0, F.col("total_revenue") / F.col("seating_capacity")).otherwise(F.lit(0.0))
+)
+
+# Random-like operational metrics (bounded)
+daily_perf_df = (daily_perf_df
+    .withColumn("avg_service_time",        (F.rand(101) * F.lit(4.5) + F.lit(3.5)))   # 3.5 .. 8.0
+    .withColumn("staff_hours_scheduled",   (F.rand(102) * F.lit(40.0) + F.lit(80.0))) # 80 .. 120
+    .withColumn("staff_hours_actual",      (F.rand(103) * F.lit(50.0) + F.lit(75.0))) # 75 .. 125
+    .withColumn("food_cost_pct",           (F.rand(104) * F.lit(0.07) + F.lit(0.28))) # 28% .. 35%
+    .withColumn("waste_amount",            (F.rand(105) * F.lit(150.0) + F.lit(50.0)))# 50 .. 200
+)
+
+# Simulated customer splits (ensure bounds)
+new_cand = (F.when(F.col("unique_customers") > 0, (F.rand(106) * F.lit(20.0) + F.lit(5.0))).otherwise(F.lit(0.0)))
+new_customers = F.least(new_cand, F.col("unique_customers").cast("double")).cast(IntegerType())
+returning_customers = (F.col("unique_customers") - new_customers).cast(IntegerType())
+
+daily_perf_df = (daily_perf_df
+    .withColumn("new_customers",       new_customers)
+    .withColumn("returning_customers", returning_customers)
+    .withColumn("loyalty_redemptions",
+        F.when(F.col("unique_customers") > 0, (F.rand(107) * F.lit(40.0) + F.lit(10.0))).otherwise(F.lit(0.0))
+         .cast(IntegerType())
+    )
+    .withColumn("avg_satisfaction_score", (F.rand(108) * F.lit(1.0) + F.lit(3.8)))  # 3.8 .. 4.8
+)
+
+# Weather & events (typed arrays/strings, no Python random/np)
+weather_choices = F.array(F.lit("sunny"), F.lit("cloudy"), F.lit("rainy"), F.lit("snowy"))
+weather_idx = (F.floor(F.rand(201) * F.size(weather_choices)) + F.lit(1)).cast("int")
+daily_perf_df = daily_perf_df.withColumn("weather_condition", F.element_at(weather_choices, weather_idx))
+
+daily_perf_df = daily_perf_df.withColumn(
+    "temperature_high", (F.floor(F.rand(202) * F.lit(51)) + F.lit(40)).cast("int")  # 40..90
+)
+
+daily_perf_df = daily_perf_df.withColumn(
+    "precipitation_inches",
+    F.when(F.col("weather_condition") == F.lit("rainy"), (F.rand(203) * F.lit(2.0))).otherwise(F.lit(0.0))
+)
+
+event_choices = F.array(F.lit("sports_game"), F.lit("concert"), F.lit("festival"))
+daily_perf_df = daily_perf_df.withColumn(
+    "local_events",
+    F.when(F.rand(204) > F.lit(0.9),
+           F.array(F.element_at(event_choices, (F.floor(F.rand(205) * F.lit(3)) + F.lit(1)).cast("int")))
+    ).otherwise(F.array().cast("array<string>"))
+)
+
+# ---------- Final projection ----------
 final_df = daily_perf_df.select(
     "store_id",
     "business_date",
@@ -724,11 +1477,12 @@ final_df = daily_perf_df.select(
     "local_events"
 )
 
-# Drop the table and save
-spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.gold.daily_store_performance")
-final_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.gold.daily_store_performance")
+# ---------- Write ----------
+spark.sql(f"DROP TABLE IF EXISTS {target_tbl}")
+final_df.write.mode("overwrite").saveAsTable(target_tbl)
 
-print(f"✓ Generated {final_df.count()} daily performance records")
+print(f"✓ Generated {final_df.count()} daily performance records -> {target_tbl}")
+
 
 # COMMAND ----------
 
@@ -765,6 +1519,19 @@ print(f"\n✓ Synthetic data generation complete")
 print(f"  - Sample percentage: {int(SAMPLE_PCT * 100)}%")
 print(f"  - Date range: {START_DATE.date()} to {END_DATE.date()}")
 print(f"  - Catalog: {CATALOG}")
+
+# COMMAND ----------
+
+print("SAMPLE_PCT =", SAMPLE_PCT)
+print("START_DATE =", START_DATE, " END_DATE =", END_DATE)
+
+days_in_period = (END_DATE - START_DATE).days + 1
+num_stores = spark.read.table(f"{CATALOG}.gold.store_locations").count()
+print("days_in_period =", days_in_period, "num_stores =", num_stores)
+
+expected = int(num_stores * days_in_period * 150 * SAMPLE_PCT)
+print("expected_total_transactions =", f"{expected:,}")
+
 
 # COMMAND ----------
 

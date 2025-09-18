@@ -15,7 +15,7 @@
 # COMMAND ----------
 
 # Optional: lightweight installs (no-ops if already on cluster)
-# %pip install pydantic langgraph aiohttp
+%pip install pydantic langgraph aiohttp
 
 import os
 from pyspark.sql import SparkSession
@@ -29,8 +29,8 @@ def widget_names():
     except Exception:
         return []
 
-CATALOG = "main"
-SCHEMA  = "orchestrator"
+CATALOG = "chipotle_analytics"
+SCHEMA  = "agents"
 try:
     if "CATALOG" in widget_names():
         CATALOG = dbutils.widgets.get("CATALOG")
